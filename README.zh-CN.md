@@ -19,8 +19,20 @@
 
 ## 安装
 
+### 在 Codex 对话框自动安装（推荐）
+
+直接在 Codex 对话框发送：
+
+```text
+$skill-installer 从 GitHub 安装 https://github.com/orange-the-weak/codex-model-router
+```
+
+安装器会把 Skill 放到 `~/.codex/skills/codex-model-router`。安装完成后重启 Codex，下一轮即可使用。
+
+### 终端手动安装
+
 ```bash
-git clone https://github.com/<你的-GitHub-用户名>/codex-model-router.git
+git clone https://github.com/orange-the-weak/codex-model-router.git
 cd codex-model-router
 ./install.sh
 ```

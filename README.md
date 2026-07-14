@@ -36,10 +36,22 @@ The generated report estimates productivity improvement against an all-Sol/mediu
 
 ## Install
 
+### Install from a Codex conversation (recommended)
+
+In Codex, send:
+
+```text
+$skill-installer 从 GitHub 安装 https://github.com/orange-the-weak/codex-model-router
+```
+
+The installer places the Skill in `~/.codex/skills/codex-model-router`. Restart Codex after installation; it will be available on the next turn.
+
+### Install from a terminal
+
 Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/<your-github-username>/codex-model-router.git
+git clone https://github.com/orange-the-weak/codex-model-router.git
 cd codex-model-router
 ./install.sh
 ```
