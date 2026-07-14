@@ -10,6 +10,7 @@
 - 如果所选模型不可用，按 `codex-model-router` 的回退规则记录实际可验证的模型；不得把配置模型冒充成实际运行模型。
 - 简单问答、文案确认、解释说明和只读查询不走 Apply 路径，也不启动模型路由，以避免额外延迟。
 - 只读查询模型使用比例或记录已完成任务时，使用 `codex-model-router` 的 Query/Record 快速路径。
+- 默认只在本地修改和验证，不自动执行 `git commit` 或 `git push`；只有用户明确要求提交、推送或发布到 GitHub 时才执行。
 
 ## Verification
 

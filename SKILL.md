@@ -96,7 +96,7 @@ Make model routing visible in the current Codex conversation whenever this skill
 - For a multi-segment switching sequence, announce again only when the model or reasoning effort changes, or when the next segment has a materially different responsibility. Do not repeat the line for every command or file.
 - Label configured-but-not-yet-verified presets as `配置模型`; do not present them as observed runtime metadata.
 - If fallback occurs, immediately show: `回退提示｜原配置：<model/effort>｜实际：<verified model/effort or available-default (unverified)>｜<reason>`.
-- If Codex does not expose actual runtime metadata, keep that caveat in the full report and ledger semantics; do not put `未验证` or “runtime model identity not exposed” in a normal completion message. The final summary should say `执行完成｜Codex 自动路由已完成：模型：<configured model>｜推理：<effort>` and only mention identity uncertainty when the user asks for an audit or a fallback occurred.
+- If Codex does not expose actual runtime metadata, keep that caveat in the full report and ledger semantics. A normal successful completion needs no separate model-identity or verification message; show the route only at the start of a materially distinct task segment. Mention identity uncertainty only when the user asks for an audit or a fallback occurred.
 
 ## Native same-task routing
 

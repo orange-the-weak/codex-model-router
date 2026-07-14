@@ -35,8 +35,8 @@ if "## Native same-task routing" not in skill_text or "Never use the thread-crea
     fail("native same-task routing contract is missing")
 if "Never assume a generic subagent's task name changes its model" not in skill_text:
     fail("generic subagent model-safety guard is missing")
-if "执行完成｜Codex 自动路由已完成" not in skill_text:
-    fail("normal completion route message is missing")
+if "A normal successful completion needs no separate model-identity or verification message" not in skill_text:
+    fail("normal completion suppression rule is missing")
 
 models = {"sol": "gpt-5.6-sol", "terra": "gpt-5.6-terra", "luna": "gpt-5.6-luna"}
 router_count = 0
