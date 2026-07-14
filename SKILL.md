@@ -96,13 +96,13 @@ Make model routing visible in the current Codex conversation whenever this skill
 - For a multi-segment switching sequence, announce again only when the model or reasoning effort changes, or when the next segment has a materially different responsibility. Do not repeat the line for every command or file.
 - Label configured-but-not-yet-verified presets as `配置模型`; do not present them as observed runtime metadata.
 - If fallback occurs, immediately show: `回退提示｜原配置：<model/effort>｜实际：<verified model/effort or available-default (unverified)>｜<reason>`.
-- If Codex does not expose actual runtime metadata, say `未验证` instead of inferring it. The final summary still reports the configured analysis route and any verified fallback separately.
+- If Codex does not expose actual runtime metadata, keep that caveat in the full report and ledger semantics; do not put `未验证` or “runtime model identity not exposed” in a normal completion message. The final summary should say `执行完成｜Codex 自动路由已完成：模型：<configured model>｜推理：<effort>` and only mention identity uncertainty when the user asks for an audit or a fallback occurred.
 
 ## Native same-task routing
 
 - Prefer the Codex thread follow-up capability because it accepts explicit `model` and `thinking` fields and keeps work in the current task.
 - Resolve the current thread from active thread metadata; do not guess among multiple active threads with the same repository.
-- A successful same-thread dispatch validates that the host accepted the requested model/effort combination. Still label runtime identity as unverified if execution metadata does not expose it afterward.
+- A successful same-thread dispatch validates that the host accepted the requested model/effort combination. Treat that accepted route as the user-facing completion result; keep any runtime-identity limitation internal unless an audit or fallback requires disclosure.
 - Never use the thread-creation capability for routing.
 - Never treat a generic subagent name as a model switch. Use a custom preset only when the spawn interface explicitly selects that preset or model.
 - When the same-thread capability is absent and no explicit model-selectable internal agent exists, report that automatic switching cannot be guaranteed on that Codex surface; provide the recommendation without pretending it ran.
