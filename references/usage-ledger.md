@@ -5,7 +5,7 @@ Store project-local history at `.codex/model-routing-history.jsonl`. Keep one co
 ## Event types
 
 - `skill_run`: one invocation. Fields: `event_id`, `timestamp`, `mode`, `analysis_model`, `effort`, and optional fallback fields.
-- `execution`: one confirmed follow-on attempt. Fields: `event_id`, optional `task_id`, `timestamp`, `model`, `effort`, `task_class`, `outcome`, optional non-negative `duration_seconds`, `source`, and fallback fields.
+- `execution`: one confirmed follow-on attempt. Fields: `event_id`, optional `task_id`, `timestamp`, `model`, `effort`, `task_class`, `outcome`, optional non-negative `duration_seconds`, `source`, `verification` (`deterministic`, `manual`, `none`, or `unknown`), and fallback fields. Older records without this field are treated as `unknown` and cannot trigger automatic lowering.
 - `allocation`: one recommended snapshot. Fields: `event_id`, `timestamp`, `basis`, and `allocation`, whose percentages total 100.
 
 Use `source=user-confirmed` when the user supplies actual usage and `source=task-metadata` only when Codex exposes reliable metadata. Never convert a recommendation into an `execution` event. Use exact model names when known; otherwise use `available-default (unverified)`.

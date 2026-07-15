@@ -1,217 +1,162 @@
 ---
-name: codex-model-router
-description: Analyze, apply, and tune project model routing inside Codex, use native same-task model and reasoning overrides when available, use a local fast path for usage queries and records, save a Markdown report, and persist validated per-model history. Prefer GPT-5.6 Sol medium for normal assessment, allow Sol, Terra, Luna and low, medium, high, or xhigh overrides, execute routed task segments in the same Codex task, adjust effort to difficulty, and fall back honestly when a route is unavailable. Use when the user asks which model should handle project tasks, invokes the skill with implementation work, queries actual or recommended usage proportions, records outcomes, retunes assignments from history, or wants a speed-first routing plan. Invoking this skill authorizes same-task routed continuations and dedicated report and history writes, never a new top-level task.
+name: codex-auto-model-router
+description: Deterministically analyze, apply, query, record, and retune project model routing inside Codex. Select one GPT-5.6 Sol, Terra, or Luna route and low, medium, high, or xhigh reasoning per request; prefer native same-task overrides, restore the original route afterward when known, fall back to an explicitly selectable subagent or the current model, write a full Markdown report, and maintain validated usage history. Use when the user invokes $codex-auto-model-router, asks which model should handle project work, requests routed implementation, queries usage ratios, records outcomes, or retunes assignments. Never create a new top-level Codex task.
 ---
 
-# Route Project Models
+# Codex Auto Model Router
 
-Use Codex's native same-task continuation with explicit `model` and `thinking` overrides for Assess, Retune, and routed Apply work. Handle Query and Record deterministically with the bundled ledger script so routine calls are fast. Use a named custom agent only when the available spawn tool has an explicit agent/preset selector; a matching task name alone is not proof that its TOML was applied. Save a complete report and minimal project-local ledger, then return only a concise, efficiency-focused summary. Do not create a top-level Codex task, add API integration, estimate API spend, edit unrelated configuration, or implement project code unless the same invocation requests implementation.
+Route each invocation through one deterministic policy. For Apply, select one model and effort for the whole user request, execute it once, and restore the original task model afterward when local Codex metadata exposes it. Skip model switching when its round-trip cost would dominate a tiny task. Query and Record stay local and fast. Never add API integration, estimate API spend, create a top-level Codex task, or commit/push unless the user separately requests it.
+
+For Assess, Retune, or Apply, run `scripts/route_policy.py` before dispatch. Read [execution-state-machine.md](references/execution-state-machine.md) only for an audit, dispatch failure, or when the policy script is unavailable. Read [usage-ledger.md](references/usage-ledger.md) before changing history. Use [routing-criteria.md](references/routing-criteria.md) for assessment and efficiency estimates.
 
 ## Path dispatch
 
 Choose exactly one path before doing any work:
 
-- If the prompt contains `ROUTE_PROJECT_MODELS_EXECUTOR=1`, use only the bounded executor path in Routed execution.
-- If the prompt contains `ROUTE_PROJECT_MODELS_ROUTED_TURN=1`, use only the same-task routed-turn path specified in that prompt.
-- Otherwise, if it contains `ROUTE_PROJECT_MODELS_SUBAGENT=1`, use only the read-only router Subagent path.
-- Otherwise, act as the coordinator below.
+- `ROUTE_PROJECT_MODELS_ROUTED_TURN=1` with `ROUTED_MODE=APPLY_ONESHOT`: execute only the supplied implementation request, then enter Restore.
+- `ROUTE_PROJECT_MODELS_ROUTED_TURN=1` with `ROUTED_MODE=ASSESS` or `RETUNE`: perform only that analysis, save artifacts, then enter Restore.
+- `ROUTE_PROJECT_MODELS_ROUTED_TURN=1` with `ROUTED_MODE=RETURN`: do no project work; return the prior routed result concisely.
+- `ROUTE_PROJECT_MODELS_EXECUTOR=1`: execute only the supplied bounded request; do not assess or delegate.
+- `ROUTE_PROJECT_MODELS_SUBAGENT=1`: use only the explicitly selected Subagent path.
+- Otherwise use the Coordinator path.
+
+Unknown `ROUTED_MODE` values are errors. Do not reinterpret them or recurse.
 
 ## Coordinator path
 
-With neither recursion marker present, act only as the coordinator:
+1. Classify exactly one mode:
+   - **Apply:** build, change, fix, refactor, test, review, or other project execution. If analysis and implementation are both requested, this is Apply.
+   - **Assess:** analyze or refresh repository routing without implementation.
+   - **Query:** show usage, ratios, history, or current allocation.
+   - **Record:** append a user-confirmed completed task and outcome.
+   - **Retune:** adjust assignments using the report and observed history.
+   - **Help:** a bare invocation with no actionable request. Show modes and examples in at most six lines; do not scan the repository.
+2. Query, Record, and Help never switch models or spawn agents. Query and Record use `scripts/model_usage_ledger.py`; if the project-local ledger/report is not writable, report that persistence was skipped but do not block the user's main task.
+3. Parse optional user overrides. Accept Sol, GPT-5.6, GPT-5.6 Sol, Terra, or Luna; accept low, medium, high, xhigh, and map `very high` or `extra high` to xhigh. One explicit supported choice wins. Ask only when values conflict or are unsupported.
+4. Classify only the inputs needed by the policy script:
+   - `task-kind=mechanical` for repetitive or copy-only work with deterministic checks; `ordinary` for bounded coding/test/review; `complex` for novel or cross-system work.
+   - `risk=high` for security, privacy, money, production, migration, data-loss, or similarly consequential work; otherwise `low` or `normal`.
+   - `size=tiny` only when the change is mechanical, normally one file, needs no broad investigation or build, and would likely finish within one model round trip; otherwise `normal` or `large`.
+5. For Apply, inspect the existing report only when it is present and cheaply matches the task. Pass its matching model and effort to the policy script. A missing, stale, or uncovered report never triggers Assess.
+6. Run the policy script with the mode, classifications, optional report route, and user overrides. It reads `CODEX_THREAD_ID` plus the matching local session's latest `turn_context` or `thread_settings_applied` settings to identify the current route without reading prompt content. Use its `route_id`, `recommended`, `execution`, `current`, and `restore_required` values as authoritative for dispatch. If the script cannot read runtime metadata, it returns an explicit unavailable state; do not guess.
+7. Keep Apply as one segment and one route. Do not create a switching sequence, queue dependent model turns, or add an independent review turn unless the user explicitly requests separate stages.
+8. Respect the policy's dispatch:
+   - `local`: execute in this turn. For a tiny task, the execution route may intentionally differ from the recommendation because switching plus restoration would cost more than the work.
+   - `same-task-switch`: dispatch once using the exact verified `current.thread_id`.
+   - `selectable-subagent-or-local`: never make a persistent same-task switch because the original route cannot be restored; try an explicitly model-selectable subagent, otherwise execute locally.
+9. If the script is missing or fails, use the same deterministic matrix: Luna low for mechanical work (medium when large), Terra medium for ordinary work (high when large), Sol high for complex/high-risk work, and keep the current route only for tiny mechanical Apply. Record the policy failure internally; do not block ordinary work.
+10. Return a short answer. Full Assess/Retune detail belongs in the report; Apply returns the normal task result plus one compact route summary when useful.
 
-1. Do not perform repository assessment or routed implementation before applying the selected route. Dispatch it as a same-task continuation with explicit model metadata. The coordinator may read the routing report, inspect results or diffs, run proportionate verification, and maintain the ledger.
-2. Select one mode:
-   - **Assess:** when the user asks to analyze, plan, classify, or refresh repository routing without requesting implementation.
-   - **Apply:** when the same skill invocation asks to build, change, fix, refactor, test, review, or otherwise execute project work. A prompt containing both routing and implementation is Apply, not Assess-only.
-   - **Query:** when the user asks for usage, ratios, history, or current allocation. Read the existing report and ledger; avoid a broad repository scan.
-   - **Record:** when the user supplies a completed task's model, effort, outcome, or duration. Validate and append it, then summarize current proportions.
-   - **Retune:** when the user asks to adjust or optimize assignments. Compare actual history with the current recommendation and inspect only evidence needed to revise it.
-3. For Query or Record, use the fast path and do not spawn an agent:
-   - Before running the local fast path, show one concise commentary line: `Codex 自动路由｜任务段：<task segment>｜模型：local-script｜推理：none｜<reason>`.
-   - First record the invocation as `skill_run` with `analysis_model=local-script` and `effort=none`.
-   - Query: run `summary`, then `render` to update only the marked report section.
-   - Record: append the user-confirmed execution with `record`, then run `summary` and `render`.
-   - Return actual model and model-effort ratios, sample status, latest recommendation, and report link. Stop this coordinator workflow here.
-4. For Assess, Retune, or Apply, parse optional choices from the user's invocation:
-   - Model: case-insensitive `Sol`, `GPT-5.6`, `GPT-5.6 Sol`, `Terra`, or `Luna`, including `模型=Terra` and `用 Luna 分析`.
-   - Reasoning: `low`, `medium`, `high`, or `xhigh`; map `very high` and `extra high` to `xhigh`.
-5. Default the analysis model to Sol. Honor an explicit supported model choice.
-6. Choose reasoning effort:
-   - Honor one explicit supported reasoning choice first.
-   - Otherwise use `low` only for a narrowly scoped, low-risk re-assessment with explicit files or boundaries and easy verification.
-   - Use `medium` by default for a normal repository assessment.
-   - Use `high` for broad or ambiguous scope, several coupled subsystems, or security, privacy, money, production, migration, or data-loss consequences.
-   - Use `xhigh` only for an explicitly deep or exhaustive assessment, conflicting prior analyses, or a well-scoped previous assessment that failed. Do not select it merely because the repository is large.
-7. Normalize the selected route to the native Codex pair `<model, thinking>`: `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`, plus `low`, `medium`, `high`, or `xhigh`. The custom preset mapping below is a secondary compatibility path only:
+## Query and Record fast path
 
-| Model | low | medium | high | xhigh |
-|---|---|---|---|---|
-| Sol | `project_model_router_low` | `project_model_router` | `project_model_router_high` | `project_model_router_xhigh` |
-| Terra | `project_model_router_terra_low` | `project_model_router_terra` | `project_model_router_terra_high` | `project_model_router_terra_xhigh` |
-| Luna | `project_model_router_luna_low` | `project_model_router_luna` | `project_model_router_luna_high` | `project_model_router_luna_xhigh` |
+Before Query or Record, show:
 
-8. If the user names multiple conflicting models, multiple conflicting efforts, or an unsupported value, ask for one supported value instead of guessing.
-9. For Assess or Retune, before dispatching, show one concise commentary line in the current Codex conversation: `Codex 自动路由｜任务段：<task segment>｜模型：<model>｜推理：<effort>｜<short reason>`.
-10. In Codex Desktop, identify the current active thread with the thread-list capability, then send a follow-up to that same thread with the selected native `model` and `thinking`. Never call the thread-creation capability. Pass a prompt containing:
-   - `ROUTE_PROJECT_MODELS_ROUTED_TURN=1`
-   - `ROUTED_MODE=ASSESS` or `ROUTED_MODE=RETUNE`
-   - the repository path and any scope supplied by the user
-   - the selected analysis model and reasoning effort
-   - the selected mode
-   - the reason for any automatic effort choice
-   - paths to the existing report and ledger when present
-   - an instruction to read this skill, complete the routed turn without delegation, save the report, update the ledger, and return the concise summary
-11. End the coordinator turn after the same-thread follow-up is accepted. The routed turn completes the work in the same Codex task. If same-thread model override is unavailable, use a subagent only when its tool explicitly accepts a model or named-agent selector. Never assume a generic subagent's task name changes its model.
-12. The routed Assess or Retune turn saves its complete Markdown report:
-   - Default to `<repository>/docs/codex-model-routing-report.md`.
-   - Follow an applicable repository instruction if it requires a different documentation or report directory.
-   - Create the parent directory when needed and update this dedicated generated report if it already exists.
-13. The routed turn maintains `<repository>/.codex/model-routing-history.jsonl` using `scripts/model_usage_ledger.py` and [usage-ledger.md](references/usage-ledger.md):
-   - Record each skill run separately from follow-on execution usage.
-   - Append actual execution only when the model is visible in reliable task metadata or the user explicitly supplies it.
-   - Append the latest recommended allocation after Assess or Retune.
-   - Never infer actual usage from a routing recommendation.
-   - Preserve exact fallback model names when known and the fallback reason.
-   - When a follow-on execution is completed inside the current observable task, append its confirmed model, effort, task class, outcome, and optional duration before returning.
-   - Run `render` after each write; never ask a model to rewrite the usage section.
-14. For Apply, follow the Routed execution section after obtaining a usable routing report.
-15. Return a short summary in the current task, not the full table. Include only:
-   - the recommended default execution model and effort
-   - two or three highest-impact efficiency optimizations
-   - `预计增效：约 X–Y%`, its comparison baseline, and whether it is heuristic or measured
-   - the analysis model and effort in one short line
-   - an absolute clickable link to the complete report
-   - for Query or Retune, actual and recommended model proportions as separate values
+`Codex 自动路由｜任务段：<task segment>｜模型：local-script｜推理：none｜<reason>`
 
-Keep the chat response to about six bullets or fewer. Do not duplicate the detailed evidence, routing table, calculation, or gaps from the report.
+- Record the invocation as `skill_run` with the matching mode, `analysis_model=local-script`, and `effort=none`.
+- Query runs `summary`, then `render` to update only the marked report section.
+- Record appends only user-confirmed or reliable task-metadata execution, then runs `summary` and `render`.
+- Return actual model and model-effort proportions, sample status, latest recommendation, and the report link.
+- Never infer actual use from a recommendation or a configured-but-unverified route.
 
 ## Visible routing protocol
 
-Make model routing visible in the current Codex conversation whenever this skill controls a distinct task segment:
+Immediately before Assess, Retune, Apply, Query, or Record, show exactly one compact commentary line:
 
-- Announce the route immediately before starting repository assessment, retuning, a local Query/Record fast path, or a follow-on segment explicitly coordinated under this skill.
-- Use exactly one compact commentary line per segment: `Codex 自动路由｜任务段：<task segment>｜模型：<model>｜推理：<low|medium|high|xhigh|none>｜<reason>`.
-- The wording must explicitly identify that Codex selected the route; do not show a bare `路由提示` label that could be mistaken for a user instruction.
-- For a multi-segment switching sequence, announce again only when the model or reasoning effort changes, or when the next segment has a materially different responsibility. Do not repeat the line for every command or file.
-- Label configured-but-not-yet-verified presets as `配置模型`; do not present them as observed runtime metadata.
-- If fallback occurs, immediately show: `回退提示｜原配置：<model/effort>｜实际：<verified model/effort or available-default (unverified)>｜<reason>`.
-- If Codex does not expose actual runtime metadata, keep that caveat in the full report and ledger semantics. A normal successful completion needs no separate model-identity or verification message; show the route only at the start of a materially distinct task segment. Mention identity uncertainty only when the user asks for an audit or a fallback occurred.
+`Codex 自动路由｜任务段：<task segment>｜模型：<model|current-route>｜推理：<low|medium|high|xhigh|none|keep>｜<reason>`
 
-## Native same-task routing
+- This means Codex selected the route; do not use an ambiguous bare `路由提示` label.
+- Do not repeat the line for commands, files, verification, Restore, or Return.
+- A normal successful completion needs no separate model-identity or runtime-verification warning.
+- For the tiny-task fast path, show the policy's execution route and say `任务较小，Codex 保持当前模型以避免切换延迟`; do not present the unused recommendation as the running model.
+- Label a configured route as configured, not observed, when task metadata is unavailable.
+- Only for a high-risk fallback, show: `Codex 自动路由状态｜目标：<model/effort>｜当前对话不支持带模型续接，已用当前可用模型继续｜<reason>`.
 
-- Prefer the Codex thread follow-up capability because it accepts explicit `model` and `thinking` fields and keeps work in the current task.
-- Resolve the current thread from active thread metadata; do not guess among multiple active threads with the same repository.
-- A successful same-thread dispatch validates that the host accepted the requested model/effort combination. Treat that accepted route as the user-facing completion result; keep any runtime-identity limitation internal unless an audit or fallback requires disclosure.
-- Never use the thread-creation capability for routing.
-- Never treat a generic subagent name as a model switch. Use a custom preset only when the spawn interface explicitly selects that preset or model.
-- When the same-thread capability is absent and no explicit model-selectable internal agent exists, report that automatic switching cannot be guaranteed on that Codex surface; provide the recommendation without pretending it ran.
+## Capability check and Dispatch
 
-## Routed execution
+Use this fixed order once; never loop across routes:
 
-Apply mode makes the routing plan operational for implementation requested in the same skill invocation:
+1. Search available Codex task tools for `send_message_to_thread` (normally `codex_app__send_message_to_thread`) and use it only when it explicitly accepts `model` and `thinking`. Never call a thread/task creation capability. Use only the verified `current.thread_id` returned from `CODEX_THREAD_ID` metadata; never find the task by repository name or recency.
+2. If same-task override is unavailable or rejected, use a subagent only when its interface explicitly accepts the requested model or named preset. Read [preset-mapping.md](references/preset-mapping.md). For Apply, select an executor preset and include only `ROUTE_PROJECT_MODELS_EXECUTOR=1`; for Assess/Retune, select a read-only router preset and include only `ROUTE_PROJECT_MODELS_SUBAGENT=1`. Both envelopes also carry mode, `route_id`, scope, paths, acceptance criteria, and validation budget. A task/agent name alone is not proof of model selection.
+3. Otherwise continue with the current model. Keep low-risk fallback silent, disclose high-risk fallback once, and never claim the requested model actually ran.
 
-1. Read `docs/codex-model-routing-report.md` and match the requested work to its task rows, upgrade triggers, and switching sequence.
-2. If no report exists, it is materially stale, or it does not cover the requested responsibility, run Assess first and save the refreshed report before implementation.
-3. Apply the speed gate before any extra routed turn:
-   - If the report covers the responsibility, no major architecture or model-picker change is known, and the request is bounded with an obvious verification path, reuse the report without a new Assess turn.
-   - If the request is one bounded responsibility, keep it as one segment. Do not split it merely to demonstrate model switching.
-   - For low-risk work, prefer the current task when its available model is already sufficient; a same-task continuation is justified only when the selected model/effort differs materially or the expected quality/risk benefit exceeds one extra turn.
-   - Reserve an extra Sol analysis or review turn for ambiguity, cross-subsystem coupling, security/privacy/money/production risk, migration/data-loss risk, or a failed lower-tier attempt.
-4. Decompose the request into the fewest independently verifiable task segments that justify distinct routes. Do not split work merely to demonstrate model switching.
-5. Assign each segment the report's model and effort. An explicit user override wins for the named segment or, if no segment is named, for the whole Apply request. Never silently replace a user override with the recommendation.
-6. Select the native model ID and effort for the segment. Use the matching executor preset below only on a Codex surface whose spawn interface explicitly supports selecting named custom agents:
+For a same-task dispatch, send the entire user request and:
 
-| Model | low | medium | high | xhigh |
-|---|---|---|---|---|
-| Sol | `project_model_executor_low` | `project_model_executor` | `project_model_executor_high` | `project_model_executor_xhigh` |
-| Terra | `project_model_executor_terra_low` | `project_model_executor_terra` | `project_model_executor_terra_high` | `project_model_executor_terra_xhigh` |
-| Luna | `project_model_executor_luna_low` | `project_model_executor_luna` | `project_model_executor_luna_high` | `project_model_executor_luna_xhigh` |
+- `ROUTE_PROJECT_MODELS_ROUTED_TURN=1`
+- `ROUTED_MODE=APPLY_ONESHOT`, `ASSESS`, or `RETUNE`
+- a unique `route_id`
+- repository path, exact scope, acceptance criteria, and validation budget
+- selected model/effort and the reason
+- verified `original_model` and `original_effort`; without both, do not use same-task dispatch
+- report and ledger paths
+- an instruction to read applicable `AGENTS.md`, this skill, and the state-machine reference
 
-7. Before each segment, show the visible route line. Use the current task for a sufficient low-risk route; otherwise dispatch the segment to the current Codex thread with explicit `model` and `thinking`, marker `ROUTE_PROJECT_MODELS_ROUTED_TURN=1`, and `ROUTED_MODE=APPLY_SEGMENT`. Never create another top-level task.
-8. Pass the routed turn the exact segment scope, acceptance criteria, applicable report row, repository path, user override, validation budget, current thread ID, and remaining ordered segments. Instruct it to read applicable `AGENTS.md` files.
-9. Run dependent segments one at a time. After a successful segment, the routed turn dispatches the next segment to the same thread with its own explicit model and effort. Stop the chain on failure and report it instead of blindly queuing dependent work.
-10. Record a confirmed execution event only when runtime task metadata exposes the route or the user confirms it. Otherwise record the configured route separately without presenting it as actual usage.
-11. On failure, diagnose the cause before changing routes. Retry once only when a more capable model or higher effort directly addresses that cause; change one dimension at a time when practical. Show the new route or fallback line before retrying.
-12. Do not claim that this routing persists into unrelated future Codex tasks. A later independent task must invoke the skill again, or explicitly ask to continue under the saved routing report.
+End the coordinator turn after the follow-up is accepted. The routed turn owns completion and Restore. Do not switch the same task when the original model or effort is unknown, because that would persistently change later turns.
 
-When the prompt contains `ROUTE_PROJECT_MODELS_EXECUTOR=1` or `ROUTE_PROJECT_MODELS_ROUTED_TURN=1` with `ROUTED_MODE=APPLY_SEGMENT`, execute only the supplied bounded segment. Do not assess routing, delegate, or create another task. Read applicable repository instructions, preserve unrelated changes, implement the segment, verify proportionately, record exposed runtime metadata, and dispatch the next same-thread segment only after success.
+## Routed Apply one-shot
 
-When the prompt contains `ROUTE_PROJECT_MODELS_ROUTED_TURN=1` with `ROUTED_MODE=ASSESS` or `ROUTED_MODE=RETUNE`, perform only that routed analysis, write the dedicated report and ledger directly, and return the concise required summary. Do not dispatch recursively unless the same invocation also contains an Apply request whose first implementation segment is ready.
+When `ROUTED_MODE=APPLY_ONESHOT`:
 
-This skill cannot silently observe unrelated Codex tasks. On a later Query, Record, or Retune invocation, reconcile only usage visible in the current task or explicitly supplied by the user; leave other usage uncounted rather than guessing.
+1. Execute the entire supplied user request as one routed unit. Do not reassess routing, split it into model stages, delegate, or dispatch another implementation turn.
+2. Read applicable repository instructions, preserve unrelated changes, implement, and verify proportionately.
+3. Run `scripts/route_policy.py --inspect-current` after the switched turn starts. Record the Apply `skill_run` and actual execution only when this metadata matches the selected route or the user confirms it. Record verification as `deterministic`, `manual`, `none`, or `unknown`; only deterministic verification can support automatic lowering. Otherwise keep configured route and actual usage distinct.
+4. On failure, diagnose and report it. Do not silently retry with a second model; a new route requires a new user or coordinator invocation.
+5. Enter Restore after success or failure.
 
-The user has authorized same-task routed continuations and the dedicated report and ledger writes by invoking the skill. Do not ask them to switch models or reply “已切换”. Do not use the top-level task-creation capability.
+## Routed Assess and Retune
 
-## Availability fallback
+When `ROUTED_MODE=ASSESS` or `RETUNE`:
 
-If the selected GPT-5.6 route is unavailable, do not stop solely for that reason:
+1. Perform only the requested read-only analysis. Do not implement project work or recursively dispatch.
+2. Save the full report to `<repository>/docs/codex-model-routing-report.md`, unless repository instructions specify another report directory.
+3. Maintain `<repository>/.codex/model-routing-history.jsonl` with the ledger script. Record the skill run, append the latest recommended allocation, then render the usage section. If persistence fails due permissions, finish the analysis and mention the skipped artifact once in the short result.
+4. Enter Restore after success or failure.
 
-1. Attempt the selected same-thread `<model, thinking>` pair once. Do not loop across unavailable GPT-5.6 routes.
-2. Perform the read-only analysis in the current task with its already available model and effort if the preset cannot start. Do not claim that the fallback model or effort was programmatically changed.
-3. Show the visible `回退提示` line before continuing with the fallback.
-4. If Codex exposes an immediately callable alternative internal model, prefer capability for high-risk analysis and speed for bounded analysis; otherwise keep the current-task fallback.
-5. State that fallback occurred, name the actual model only when exposed, and record `fallback_from`, `fallback_to`, and the reason. Use `available-default (unverified)` when the name is hidden. Never claim GPT-5.6 was used without verification.
+## Restore and Return
 
-If no usable model exists, report the capability gap and stop.
+- If no model switch occurred, return the result directly. A same-task switch is forbidden when the original route is unknown. Do not emit an identity warning on normal success.
+- If a same-task switch occurred and both original values are known, send one same-task follow-up using the original `model` and `thinking`, with `ROUTE_PROJECT_MODELS_ROUTED_TURN=1`, `ROUTED_MODE=RETURN`, the same `route_id`, and the completed result. This is the only allowed post-execution continuation.
+- If restoration is rejected, do not loop. Mention it only for high-risk work or when the user asks for an audit.
+- A Return turn performs no tools, edits, tests, assessment, delegation, ledger writes, or additional routing. It presents the supplied completed result in the required concise format.
 
 ## Subagent path
 
-When the prompt contains `ROUTE_PROJECT_MODELS_SUBAGENT=1`, do not delegate or create any task. This secondary path is valid only when the spawning interface explicitly selected a model or named custom preset; a matching task name is insufficient evidence.
+The read-only Subagent path requires both `ROUTE_PROJECT_MODELS_SUBAGENT=1` and an interface-confirmed model or named router preset. Do not delegate again. Perform the supplied Assess or Retune request once and return results to the parent, which writes artifacts. Apply uses the separate Executor path and marker. A generic subagent may isolate work, but its model must remain unverified and it must not be counted as the requested model.
 
-Perform only Assess or Retune in this subagent. Return a complete Markdown-ready report plus a small structured ledger payload to the parent task; do not write files. Apply recommendations only to follow-on execution tasks.
+## Assessment workflow
 
-## Workflow
+1. Read applicable `AGENTS.md` and repository guidance.
+2. Inventory with cheap read-only commands. Exclude generated output, dependencies, caches, binaries, and vendored code unless directly relevant.
+3. Identify areas by responsibility and workflow; inspect representative entry points, manifests, tests, build/deploy files, and risk boundaries.
+4. Classify recurring tasks by ambiguity, scope, coupling, verification difficulty, and consequence of error.
+5. Select the smallest model and lowest effort likely to finish correctly in one pass. Lower routes after decomposition; raise only for concrete ambiguity, coupling, or consequences.
 
-1. Confirm a routed-turn or valid subagent marker is present; never spawn recursively.
-2. Read applicable `AGENTS.md` files and repository guidance first. Read [usage-ledger.md](references/usage-ledger.md) for Retune.
-3. For Assess, inventory the project with cheap commands such as `rg --files`, shallow `find`, manifest inspection, and `git status`. For Retune, start from the script's route-performance signals and inspect changed or underperforming task areas only. Exclude generated output, dependencies, caches, binaries, and vendored code unless directly relevant.
-4. Identify project areas by responsibility and workflow, not merely by directory. Inspect representative entry points, manifests, tests, build/deploy files, data boundaries, and high-risk code.
-5. Classify recurring tasks in each area by ambiguity, scope, coupling, verification difficulty, and consequence of error.
-6. Select the smallest model and lowest reasoning effort likely to finish each follow-on task correctly in one pass. Read [routing-criteria.md](references/routing-criteria.md) for the decision rules.
-7. Raise the execution recommendation one tier when evidence is incomplete, requirements are ambiguous, the change crosses several subsystems, or failure can cause security, privacy, money, data loss, or production impact.
-8. Lower the execution recommendation after the task is decomposed into bounded, independently verifiable steps.
-
-Do not compile or run tests merely to create the routing plan. For iOS repositories, respect local validation guidance and never launch a full build for a small routing assessment. If later implementation is requested, preserve any requested simulator preview state after proportionate verification.
-
-## Model normalization
-
-Treat `GPT-5.6` and `GPT-5.6 Sol` as the same documented model tier unless the current Codex model picker explicitly describes them differently. Present three distinct routing tiers: Sol, Terra, and Luna. If a recommended tier is unavailable in the user's Codex picker, choose the nearest more capable available tier and say so.
+Do not compile or run tests merely to create a routing plan. For iOS repositories, respect local validation guidance and never launch a full build for a small routing assessment.
 
 ## Routing principles
 
-- Route tasks, not permanent ownership of folders. The same module may use Luna for formatting, Terra for a bounded feature, and Sol for redesigning its architecture.
-- Default to Terra with low reasoning for ordinary coding work when evidence does not justify either extreme.
-- Use Luna for mechanical, repetitive, high-volume, locally verifiable work.
-- Use Sol for ambiguous, deeply coupled, high-risk, or novel work where a wrong plan costs more than additional thinking time.
-- Prefer decomposition over increasing reasoning effort. A clean sequence of Terra or Luna tasks is often faster than one broad Sol task.
-- Use `xhigh` or `max` only with an explicit reason. Never select them as a generic quality setting.
-- Separate implementation from independent review. A cheaper tier may implement a bounded change while a stronger tier reviews architecture, security, or migration risk.
+- All three models default to medium when no task evidence supports another effort.
+- Luna fits mechanical, repetitive, high-volume, locally verifiable work.
+- Terra fits ordinary bounded implementation, test, and review work.
+- Sol fits ambiguous, deeply coupled, high-risk, or novel work where a wrong plan costs more than extra reasoning.
+- Prefer a bounded task over higher effort. Use xhigh only with an explicit reason.
+- Route tasks, not permanent folder ownership. Reassess after architecture/model-picker changes, sensitive integrations, or diagnosed lower-tier failure.
 
-## Required output
+## Report and ledger output
 
-These output requirements apply to the complete Markdown result written by a routed turn or returned by a valid explicitly selected subagent. Lead with one sentence naming the recommended default model and effort for the repository.
-
-State the actual analysis model and effort separately from execution recommendations. Explicitly label availability fallback and unverified model names.
-
-Then provide a compact table:
+Lead the report with the recommended default execution model and effort. State the actual analysis model/effort separately from recommendations, and label fallback or uncertainty only when relevant. Include this table:
 
 | Project area or task | Evidence | Model | Reasoning | Why | Upgrade trigger |
 |---|---|---|---|---|---|
 
-After the table, include:
+Then include Fast path, Use Sol only when, a minimal switching sequence for future independent tasks, Efficiency estimate, Usage proportions, and Confidence and gaps. The efficiency estimate must state baseline, task-mix assumptions, calculation, `预计增效：约 X–Y%`, highest-impact optimization, and whether it is heuristic or measured.
 
-- **Fast path:** the tasks suitable for Luna or Terra at `none`/`low`.
-- **Use Sol only when:** the concrete conditions that justify escalation.
-- **Switching sequence:** an ordered, minimal-switch workflow for the user's likely next task.
-- **Efficiency estimate:** the baseline, estimated task mix, assumptions, calculation, rounded percentage range, and the highest-impact sources of improvement. Follow the method in [routing-criteria.md](references/routing-criteria.md). Label an estimate as heuristic unless supported by repository-specific timing or evaluation evidence.
-- **Usage proportions:** include a `## Usage proportions` heading followed by exactly one empty marker pair, `<!-- MODEL_USAGE_START -->` and `<!-- MODEL_USAGE_END -->`. The coordinator fills it deterministically after ledger updates; do not generate usage statistics inside the markers.
-- **Confidence and gaps:** what was inspected, what was inferred, and what could change the routing.
+Under `## Usage proportions`, include exactly one empty marker pair:
 
-Keep paths and task names concrete. Avoid vague labels such as “backend work” when the repository supports a more precise boundary. Do not claim benchmark-level model differences without current evidence.
+`<!-- MODEL_USAGE_START -->`
 
-## Reassessment
+`<!-- MODEL_USAGE_END -->`
 
-Re-run the routing assessment after a major architecture change, new platform or service integration, security-sensitive feature, failed lower-tier attempt, or material change to the Codex model picker. For a failed attempt, diagnose why it failed before escalating; do not automatically increase both model tier and reasoning effort.
+The ledger script fills the markers. Do not generate statistics inside them. Retune raises only after at least 5 comparable attempts with at least 40% failure/escalation/rework pressure, and lowers only after at least 10 attempts with at least 90% completion and no pressure events. Otherwise hold unless the user explicitly asks for heuristic retuning.
 
-Retune from the deterministic signals in the ledger summary. Raise only after at least 5 comparable attempts with at least 40% failure/escalation/rework pressure. Lower only after at least 10 comparable attempts with at least 90% completion, no pressure events, and deterministic verification. Keep the prior allocation when evidence is below threshold unless the user explicitly requests a heuristic reassessment. Move only the affected task class and note each changed assignment.
+The chat summary should contain about six bullets or fewer: default route, two or three highest-impact optimizations, estimated efficiency range and baseline, analysis route, report link, and actual versus recommended proportions for Query or Retune.

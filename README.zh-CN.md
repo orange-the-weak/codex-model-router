@@ -1,4 +1,4 @@
-# Codex Model Router
+# Codex Auto Model Router
 
 一个面向 OpenAI Codex 的任务级模型路由 Skill：根据项目和任务难度，在 GPT-5.6 Sol、Terra、Luna 之间分配工作，自动选择 `low`、`medium`、`high` 或 `xhigh` 推理强度，并通过真实使用记录持续微调。
 
@@ -7,9 +7,12 @@
 ## 主要能力
 
 - 分析项目结构，为不同任务推荐最小够用的模型和推理强度。
-- Apply 模式会把同一次调用中请求的实际工作拆成任务段，通过 Codex 原生的同任务 `model` 与 `thinking` 覆盖交给匹配模型执行，而不只是生成规划文档。
+- Apply 模式为整次请求只选择一条路由；当前 Codex 界面提供同任务 `model` 与 `thinking` 覆盖时才执行切换，并在可靠元数据可用时恢复原路由。
+- 报告缺失或过期时不再额外插入 Assess 回合；边界明确的任务使用确定性默认路由，以减少延迟。
+- 单文件机械小改在切换与恢复成本高于任务本身时保持当前模型；用户明确指定模型时仍严格遵循指定值。
+- 通过 `CODEX_THREAD_ID` 与本地 `turn_context` 或 `thread_settings_applied` 设置元数据识别当前任务和原路由，不读取提示词正文。
 - 默认使用 Sol / medium 完成首次分析，也允许用户指定任意 Sol、Terra、Luna 和推理强度组合。
-- 每个明显不同的任务段开始前，在 Codex 对话框显示模型、推理强度、任务目的和回退状态。
+- 每次路由请求开始前，在 Codex 对话框显示一次模型、推理强度和任务目的。
 - Query 和 Record 使用本地脚本快速完成，不启动分析 Agent。
 - 分开统计实际执行比例、分析调用比例和最新建议比例。
 - 根据成功、失败、升级、返工和耗时证据微调任务分配。
@@ -19,44 +22,45 @@
 
 ## 安装
 
-### 在 Codex 对话框自动安装（推荐）
+### 在 Codex 对话框安装纯 Skill
 
 直接在 Codex 对话框发送：
 
 ```text
-$skill-installer 从 GitHub 安装 https://github.com/orange-the-weak/codex-model-router
+$skill-installer 从 GitHub 安装 https://github.com/orange-the-weak/codex-auto-model-router
 ```
 
-安装器会把 Skill 放到 `~/.codex/skills/codex-model-router`。安装完成后重启 Codex，下一轮即可使用。
+Skill 安装器会把 Skill 放到 `~/.codex/skills/codex-auto-model-router`，但不会运行仓库的 `install.sh`、安装可选的 24 个自定义 Agent 预设，也不会清理旧 Skill 名称。首次只安装 Skill 时已够用；完整安装或名称迁移请使用下面的终端方式。安装后重启 Codex。
 
 ### 终端手动安装
 
 ```bash
-git clone https://github.com/orange-the-weak/codex-model-router.git
-cd codex-model-router
+git clone https://github.com/orange-the-weak/codex-auto-model-router.git
+cd codex-auto-model-router
 ./install.sh
 ```
 
 安装后重新启动 Codex，使 Skill 和自定义 Agent 生效。
+从旧名称升级时，安装脚本只会清理旧的 `codex-model-router` Skill 目录和 `project-model-*` 预设，避免 Codex 同时显示新旧两个名称。
 
 ## 使用示例
 
 ```text
-$codex-model-router 分析当前项目并优化模型分配
-$codex-model-router 查询各模型实际使用比例
-$codex-model-router 记录：Terra low 完成 UI 调整，耗时 90 秒
-$codex-model-router 根据历史成功率、返工和耗时微调任务分配
-$codex-model-router 用 Terra high 分析当前项目
-$codex-model-router 按照已保存的路由规划实现这个功能
+$codex-auto-model-router 分析当前项目并优化模型分配
+$codex-auto-model-router 查询各模型实际使用比例
+$codex-auto-model-router 记录：Terra low 完成 UI 调整，耗时 90 秒
+$codex-auto-model-router 根据历史成功率、返工和耗时微调任务分配
+$codex-auto-model-router 用 Terra high 分析当前项目
+$codex-auto-model-router 按照已保存的路由规划实现这个功能
 ```
 
-任务段开始前会显示一条简洁提示；只有模型、推理强度或职责明显变化时才再次显示：
+路由任务开始前会显示一条简洁提示；命令、文件、验证和恢复阶段不重复显示：
 
 ```text
 Codex 自动路由｜任务段：项目分析｜模型：GPT-5.6 Sol｜推理：medium｜Codex 根据项目范围自动选择
 ```
 
-在 Codex Desktop 中，任务段通过带有明确模型和推理字段的续接消息回到当前任务，不会新开任务。不能把普通子任务名称当成模型已经切换的证据。这项约束覆盖该次 Skill 调用所协调的工作；以后另开的独立任务需要再次调用 Skill，或明确要求沿用已保存的路由报告。
+当当前 Codex 界面提供带模型和推理字段的同任务续接能力时，任务会在当前任务内切换，并在原路由可验证时完成后恢复；否则依次尝试显式可选模型的子智能体和当前模型。不会新开顶层任务，也不能把普通子任务名称当成模型已经切换的证据。以后另开的独立任务需要再次调用 Skill，或明确要求沿用已保存的路由报告。
 
 ## 输出文件
 

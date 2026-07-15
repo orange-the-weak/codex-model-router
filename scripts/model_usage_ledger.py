@@ -2,27 +2,110 @@
 """Safely append, aggregate, and render the model-routing usage ledger."""
 
 import argparse
-import fcntl
 import json
 import math
 import os
 import statistics
 import uuid
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
-EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
-MODES = ("assess", "query", "record", "retune")
+try:
+    import msvcrt
+except ImportError:  # POSIX
+    msvcrt = None
+
+
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+MODES = ("assess", "apply", "query", "record", "retune")
 OUTCOMES = ("completed", "failed", "escalated", "reworked", "cancelled")
 SOURCES = ("user-confirmed", "task-metadata")
+VERIFICATIONS = ("deterministic", "manual", "none", "unknown")
 USAGE_START = "<!-- MODEL_USAGE_START -->"
 USAGE_END = "<!-- MODEL_USAGE_END -->"
 
 
+@contextmanager
+def locked_file(handle, exclusive):
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:
+        handle.seek(0)
+        mode = msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK
+        msvcrt.locking(handle.fileno(), mode, 1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    raise RuntimeError("no supported file-lock implementation")
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def validate_event(event):
+    if not isinstance(event, dict):
+        raise ValueError("event is not an object")
+    event_type = event.get("event")
+    if event_type == "skill_run":
+        if event.get("mode") not in MODES:
+            raise ValueError("invalid skill_run mode")
+        if not isinstance(event.get("analysis_model"), str) or not event["analysis_model"]:
+            raise ValueError("invalid skill_run analysis_model")
+        if event.get("effort") not in EFFORTS:
+            raise ValueError("invalid skill_run effort")
+    elif event_type == "execution":
+        if not isinstance(event.get("model"), str) or not event["model"]:
+            raise ValueError("invalid execution model")
+        if event.get("effort") not in EFFORTS:
+            raise ValueError("invalid execution effort")
+        if not isinstance(event.get("task_class"), str) or not event["task_class"]:
+            raise ValueError("invalid execution task_class")
+        if event.get("outcome") not in OUTCOMES:
+            raise ValueError("invalid execution outcome")
+        if event.get("source") not in SOURCES:
+            raise ValueError("invalid execution source")
+        if event.get("verification", "unknown") not in VERIFICATIONS:
+            raise ValueError("invalid execution verification")
+    elif event_type == "allocation":
+        if event.get("basis") not in ("heuristic", "observed", "mixed"):
+            raise ValueError("invalid allocation basis")
+        allocation = event.get("allocation")
+        if not isinstance(allocation, dict) or not allocation:
+            raise ValueError("invalid allocation values")
+        values = list(allocation.values())
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool)
+               or not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError("invalid allocation percentage")
+        if abs(sum(values) - 100) > 0.01:
+            raise ValueError("allocation percentages must total 100")
+    else:
+        raise ValueError("unknown event type")
+
+    duration = event.get("duration_seconds")
+    if duration is not None and (
+        not isinstance(duration, (int, float)) or isinstance(duration, bool)
+        or not math.isfinite(duration) or duration < 0
+    ):
+        raise ValueError("duration must be finite and non-negative")
+    if "event_id" in event and not isinstance(event["event_id"], str):
+        raise ValueError("event_id must be a string")
+    return event
 
 
 def load_lines(text, source):
@@ -32,11 +115,9 @@ def load_lines(text, source):
             continue
         try:
             event = json.loads(line)
-            if not isinstance(event, dict):
-                raise ValueError("event is not an object")
-            events.append(event)
+            events.append(validate_event(event))
         except (json.JSONDecodeError, ValueError) as exc:
-            warnings.append(f"skipped malformed event at {source}:{number}: {exc}")
+            warnings.append(f"skipped invalid event at {source}:{number}: {exc}")
     return events, warnings
 
 
@@ -44,9 +125,8 @@ def read_events(path):
     if not path.exists():
         return [], []
     with path.open("r", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
-        text = handle.read()
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with locked_file(handle, exclusive=False):
+            text = handle.read()
     return load_lines(text, path)
 
 
@@ -54,22 +134,21 @@ def append_event(path, event):
     path.parent.mkdir(parents=True, exist_ok=True)
     event.setdefault("event_id", str(uuid.uuid4()))
     event.setdefault("timestamp", now())
+    validate_event(event)
     encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        handle.seek(0)
-        existing_text = handle.read()
-        existing, _ = load_lines(existing_text, path)
-        if any(item.get("event_id") == event["event_id"] for item in existing):
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            return False
-        handle.seek(0, os.SEEK_END)
-        if existing_text and not existing_text.endswith("\n"):
-            handle.write("\n")
-        handle.write(encoded + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with locked_file(handle, exclusive=True):
+            handle.seek(0)
+            existing_text = handle.read()
+            existing, _ = load_lines(existing_text, path)
+            if any(item.get("event_id") == event["event_id"] for item in existing):
+                return False
+            handle.seek(0, os.SEEK_END)
+            if existing_text and not existing_text.endswith("\n"):
+                handle.write("\n")
+            handle.write(encoded + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     return True
 
 
@@ -106,10 +185,12 @@ def route_performance(executions):
         attempts = sum(value for name, value in outcomes.items() if name != "cancelled")
         completed = outcomes.get("completed", 0)
         pressure = sum(outcomes.get(name, 0) for name in ("failed", "escalated", "reworked"))
-        durations = [item["duration_seconds"] for item in items if item.get("duration_seconds") is not None]
+        active_items = [item for item in items if item.get("outcome") != "cancelled"]
+        durations = [item["duration_seconds"] for item in active_items if item.get("duration_seconds") is not None]
+        deterministic = sum(item.get("verification") == "deterministic" for item in active_items)
         if attempts >= 5 and pressure / attempts >= 0.4:
             signal = "raise_candidate"
-        elif attempts >= 10 and completed / attempts >= 0.9 and pressure == 0:
+        elif attempts >= 10 and completed / attempts >= 0.9 and pressure == 0 and deterministic == attempts:
             signal = "lower_candidate"
         elif attempts < 5:
             signal = "insufficient_sample"
@@ -122,6 +203,7 @@ def route_performance(executions):
             "pressure_rate": round(pressure * 100 / attempts, 1) if attempts else None,
             "duration_median_seconds": round(statistics.median(durations), 1) if durations else None,
             "duration_p75_seconds": round(percentile(durations, 0.75), 1) if durations else None,
+            "deterministic_verification_rate": round(deterministic * 100 / attempts, 1) if attempts else None,
             "retune_signal": signal,
         }
     return result
@@ -204,7 +286,7 @@ def render_markdown(summary):
     else:
         lines.append("No route currently meets the automatic retuning evidence threshold.")
     if summary["warnings"]:
-        lines.extend(["", f"Ledger warnings: {len(summary['warnings'])} malformed event(s) skipped."])
+        lines.extend(["", f"Ledger warnings: {len(summary['warnings'])} invalid event(s) skipped."])
     lines.append(USAGE_END)
     return "\n".join(lines)
 
@@ -212,25 +294,24 @@ def render_markdown(summary):
 def update_report(path, block):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        handle.seek(0)
-        text = handle.read()
-        starts, ends = text.count(USAGE_START), text.count(USAGE_END)
-        if starts != ends or starts > 1:
-            raise SystemExit("report has unmatched or duplicate model-usage markers")
-        if starts == 1:
-            before = text.split(USAGE_START, 1)[0].rstrip()
-            after = text.split(USAGE_END, 1)[1].lstrip("\n")
-            updated = before + "\n\n" + block + ("\n\n" + after if after else "\n")
-        else:
-            heading = "# Codex model routing report\n" if not text.strip() else text.rstrip()
-            updated = heading + "\n\n## Usage proportions\n\n" + block + "\n"
-        handle.seek(0)
-        handle.truncate()
-        handle.write(updated)
-        handle.flush()
-        os.fsync(handle.fileno())
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with locked_file(handle, exclusive=True):
+            handle.seek(0)
+            text = handle.read()
+            starts, ends = text.count(USAGE_START), text.count(USAGE_END)
+            if starts != ends or starts > 1:
+                raise SystemExit("report has unmatched or duplicate model-usage markers")
+            if starts == 1:
+                before = text.split(USAGE_START, 1)[0].rstrip()
+                after = text.split(USAGE_END, 1)[1].lstrip("\n")
+                updated = before + "\n\n" + block + ("\n\n" + after if after else "\n")
+            else:
+                heading = "# Codex model routing report\n" if not text.strip() else text.rstrip()
+                updated = heading + "\n\n## Usage proportions\n\n" + block + "\n"
+            handle.seek(0)
+            handle.truncate()
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def record(args):
@@ -246,7 +327,7 @@ def record(args):
     event = {"event": args.event}
     for key in ("event_id", "task_id", "mode", "analysis_model", "model", "effort",
                 "task_class", "outcome", "source", "fallback_from", "fallback_to",
-                "fallback_reason"):
+                "fallback_reason", "verification"):
         value = getattr(args, key, None)
         if value is not None:
             event[key] = value
@@ -301,6 +382,7 @@ def parser():
     rec.add_argument("--task-class")
     rec.add_argument("--outcome", choices=OUTCOMES)
     rec.add_argument("--source", choices=SOURCES)
+    rec.add_argument("--verification", choices=VERIFICATIONS)
     rec.add_argument("--fallback-from")
     rec.add_argument("--fallback-to")
     rec.add_argument("--fallback-reason")

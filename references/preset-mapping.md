@@ -1,0 +1,21 @@
+# Explicit custom-agent preset mapping
+
+Use this compatibility mapping only when the subagent interface explicitly accepts a preset or agent name. Selecting a generic task name does not apply a preset.
+
+## Assess and Retune (read-only router)
+
+| Model | low | medium | high | xhigh |
+|---|---|---|---|---|
+| Sol | `codex_auto_model_router_low` | `codex_auto_model_router` | `codex_auto_model_router_high` | `codex_auto_model_router_xhigh` |
+| Terra | `codex_auto_model_router_terra_low` | `codex_auto_model_router_terra` | `codex_auto_model_router_terra_high` | `codex_auto_model_router_terra_xhigh` |
+| Luna | `codex_auto_model_router_luna_low` | `codex_auto_model_router_luna` | `codex_auto_model_router_luna_high` | `codex_auto_model_router_luna_xhigh` |
+
+## Apply (workspace-write executor)
+
+| Model | low | medium | high | xhigh |
+|---|---|---|---|---|
+| Sol | `codex_auto_model_executor_low` | `codex_auto_model_executor` | `codex_auto_model_executor_high` | `codex_auto_model_executor_xhigh` |
+| Terra | `codex_auto_model_executor_terra_low` | `codex_auto_model_executor_terra` | `codex_auto_model_executor_terra_high` | `codex_auto_model_executor_terra_xhigh` |
+| Luna | `codex_auto_model_executor_luna_low` | `codex_auto_model_executor_luna` | `codex_auto_model_executor_luna_high` | `codex_auto_model_executor_luna_xhigh` |
+
+Every prompt includes the selected mode, `route_id`, exact scope, repository path, acceptance criteria, and validation budget. Apply uses an executor preset with only `ROUTE_PROJECT_MODELS_EXECUTOR=1`. Assess and Retune use a router preset with only `ROUTE_PROJECT_MODELS_SUBAGENT=1`. Never send both markers. The selected agent must not route or delegate again.

@@ -13,7 +13,7 @@ skill_text = (ROOT / "SKILL.md").read_text()
 if not skill_text.startswith("---\n"):
     fail("SKILL.md frontmatter is missing")
 frontmatter = skill_text.split("---", 2)[1]
-if "\nname: codex-model-router\n" not in "\n" + frontmatter or "\ndescription: " not in "\n" + frontmatter:
+if "\nname: codex-auto-model-router\n" not in "\n" + frontmatter or "\ndescription: " not in "\n" + frontmatter:
     fail("SKILL.md frontmatter is invalid")
 
 ui_text = (ROOT / "agents" / "openai.yaml").read_text()
@@ -25,18 +25,61 @@ for line in ui_text.splitlines():
         values[key] = value.strip().strip('"')
 if not 25 <= len(values.get("short_description", "")) <= 64:
     fail("openai.yaml short_description length is invalid")
-if "$codex-model-router" not in values.get("default_prompt", ""):
+if "$codex-auto-model-router" not in values.get("default_prompt", ""):
     fail("openai.yaml default prompt does not invoke the skill")
 if "## Visible routing protocol" not in skill_text or "Codex 自动路由｜任务段：<task segment>" not in skill_text:
     fail("visible routing protocol is missing")
 if "## Path dispatch" not in skill_text or "ROUTE_PROJECT_MODELS_EXECUTOR=1`" not in skill_text:
     fail("coordinator/router/executor path dispatch is missing")
-if "## Native same-task routing" not in skill_text or "Never use the thread-creation capability" not in skill_text:
-    fail("native same-task routing contract is missing")
-if "Never assume a generic subagent's task name changes its model" not in skill_text:
+if "## Capability check and Dispatch" not in skill_text or "Never call a thread/task creation capability" not in skill_text:
+    fail("same-task routing contract is missing")
+if "A task/agent name alone is not proof of model selection" not in skill_text:
     fail("generic subagent model-safety guard is missing")
-if "A normal successful completion needs no separate model-identity or verification message" not in skill_text:
+if "A normal successful completion needs no separate model-identity or runtime-verification warning" not in skill_text:
     fail("normal completion suppression rule is missing")
+if "Use this fixed order once" not in skill_text or "use a subagent only when" not in skill_text:
+    fail("switch-to-subagent fallback order is missing")
+if "ROUTED_MODE=APPLY_ONESHOT" not in skill_text or "## Restore and Return" not in skill_text:
+    fail("one-shot Apply or restore contract is missing")
+if "A missing, stale, or uncovered report never triggers Assess" not in skill_text or "Keep Apply as one segment and one route" not in skill_text:
+    fail("deterministic Apply fallback is missing")
+if "tiny-task" not in skill_text or "Do not switch the same task when the original model or effort is unknown" not in skill_text:
+    fail("switch-cost or safe-restore rule is missing")
+if "APPLY_SEGMENT" in skill_text:
+    fail("legacy multi-segment Apply protocol is still present")
+
+state_machine = (ROOT / "references" / "execution-state-machine.md").read_text()
+for invariant in (
+    "one mode, one selected route, and one `route_id`",
+    "never automatically becomes Assess",
+    "exactly one Restore attempt",
+    "`RETURN` is terminal",
+):
+    if invariant not in state_machine:
+        fail(f"state-machine invariant is missing: {invariant}")
+
+ledger_text = (ROOT / "scripts" / "model_usage_ledger.py").read_text()
+if 'MODES = ("assess", "apply", "query", "record", "retune")' not in ledger_text:
+    fail("Apply ledger mode is missing")
+if "import msvcrt" not in ledger_text or "import fcntl" not in ledger_text:
+    fail("cross-platform ledger locking is missing")
+
+policy_text = (ROOT / "scripts" / "route_policy.py").read_text()
+for contract in ("CODEX_THREAD_ID", "thread_settings_applied", "turn_context", "tiny-task-switch-cost", "selectable-subagent-or-local"):
+    if contract not in policy_text:
+        fail(f"route policy contract is missing: {contract}")
+
+install_text = (ROOT / "install.sh").read_text()
+if 'cp "$ROOT/scripts/"*.py' not in install_text:
+    fail("installer does not copy every bundled policy script")
+if 'SKILL_TARGET="$CODEX_HOME/skills/codex-auto-model-router"' not in install_text:
+    fail("installer target does not match the renamed skill")
+if 'LEGACY_SKILL_TARGET="$CODEX_HOME/skills/codex-model-router"' not in install_text:
+    fail("installer does not migrate the legacy skill name")
+if 'project-model-router*.toml' in install_text or 'project-model-executor*.toml' in install_text:
+    fail("installer uses an unsafe broad legacy-agent cleanup glob")
+
+preset_mapping = (ROOT / "references" / "preset-mapping.md").read_text()
 
 models = {"sol": "gpt-5.6-sol", "terra": "gpt-5.6-terra", "luna": "gpt-5.6-luna"}
 router_count = 0
@@ -44,39 +87,57 @@ executor_count = 0
 for tier, model in models.items():
     for effort in ("low", "medium", "high", "xhigh"):
         if tier == "sol" and effort == "medium":
-            name = "project-model-router.toml"
+            name = "codex-auto-model-router.toml"
         elif effort == "medium":
-            name = f"project-model-router-{tier}.toml"
+            name = f"codex-auto-model-router-{tier}.toml"
         elif tier == "sol":
-            name = f"project-model-router-{effort}.toml"
+            name = f"codex-auto-model-router-{effort}.toml"
         else:
-            name = f"project-model-router-{tier}-{effort}.toml"
+            name = f"codex-auto-model-router-{tier}-{effort}.toml"
         data = tomllib.loads((ROOT / "codex-agents" / name).read_text())
+        if data.get("name") != Path(name).stem.replace("-", "_"):
+            fail(f"incorrect preset name: {name}")
         if data.get("model") != model or data.get("model_reasoning_effort") != effort:
             fail(f"incorrect preset: {name}")
         if data.get("sandbox_mode") != "read-only":
             fail(f"agent must be read-only: {name}")
+        if "ROUTE_PROJECT_MODELS_SUBAGENT=1" not in data.get("developer_instructions", ""):
+            fail(f"router subagent recursion guard is missing: {name}")
+        if f"`{data.get('name')}`" not in preset_mapping:
+            fail(f"router preset mapping is missing: {name}")
         router_count += 1
 
         if tier == "sol" and effort == "medium":
-            executor_name = "project-model-executor.toml"
+            executor_name = "codex-auto-model-executor.toml"
         elif effort == "medium":
-            executor_name = f"project-model-executor-{tier}.toml"
+            executor_name = f"codex-auto-model-executor-{tier}.toml"
         elif tier == "sol":
-            executor_name = f"project-model-executor-{effort}.toml"
+            executor_name = f"codex-auto-model-executor-{effort}.toml"
         else:
-            executor_name = f"project-model-executor-{tier}-{effort}.toml"
+            executor_name = f"codex-auto-model-executor-{tier}-{effort}.toml"
         executor = tomllib.loads((ROOT / "codex-agents" / executor_name).read_text())
+        if executor.get("name") != Path(executor_name).stem.replace("-", "_"):
+            fail(f"incorrect executor name: {executor_name}")
         if executor.get("model") != model or executor.get("model_reasoning_effort") != effort:
             fail(f"incorrect executor preset: {executor_name}")
         if executor.get("sandbox_mode") != "workspace-write":
             fail(f"executor must be workspace-write: {executor_name}")
         if "ROUTE_PROJECT_MODELS_EXECUTOR=1" not in executor.get("developer_instructions", ""):
             fail(f"executor recursion guard is missing: {executor_name}")
+        if f"`{executor.get('name')}`" not in preset_mapping:
+            fail(f"executor preset mapping is missing: {executor_name}")
         executor_count += 1
 
 if router_count != 12 or executor_count != 12:
     fail(f"expected 12 router and 12 executor presets, found {router_count} and {executor_count}")
+
+legacy_presets = list((ROOT / "codex-agents").glob("project-model-*.toml"))
+if legacy_presets:
+    fail(f"legacy preset files remain: {legacy_presets}")
+
+readme_text = (ROOT / "README.md").read_text()
+if "https://github.com/orange-the-weak/codex-auto-model-router" not in readme_text:
+    fail("README install URL does not match the current repository remote")
 
 for forbidden in ("s" + "k-" + "live", "BEGIN " + "PRIVATE KEY", "api" + "_key"):
     for path in ROOT.rglob("*"):

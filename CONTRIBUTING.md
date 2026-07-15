@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for improving Codex Model Router.
+Thanks for improving Codex Auto Model Router.
 
 ## Before opening a pull request
 

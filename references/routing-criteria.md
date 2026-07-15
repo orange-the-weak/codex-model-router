@@ -18,12 +18,10 @@ Official model guidance describes Sol as the frontier tier for complex professio
 
 | Effort | Use when | Typical pairing |
 |---|---|---|
-| none | Transformation is deterministic and the answer follows directly from supplied evidence | Luna |
 | low | Task is bounded, familiar, and locally verifiable | Luna or Terra; default for routine work |
 | medium | Several constraints interact or a multi-file plan must remain coherent | Terra or Sol; default for genuine analysis |
 | high | Ambiguity, deep coupling, or high consequence requires careful alternatives and validation | Sol |
 | xhigh | A demonstrably difficult problem resisted a well-scoped attempt or needs exhaustive analysis | Sol, exceptional |
-| max | Explicitly requested frontier effort for an unusually hard, benchmark-like, or critical investigation | Sol, rare and justified |
 
 Never choose an effort merely because the model supports it. Prefer `low` over `medium`, and `medium` over `high`, unless a named risk or dependency requires more.
 
@@ -46,7 +44,7 @@ Escalate one dimension at a time:
 1. Clarify acceptance criteria and shrink scope.
 2. Increase reasoning effort within the same model.
 3. Move Luna to Terra or Terra to Sol.
-4. Use `xhigh` or `max` only after recording why the prior scoped attempt was insufficient.
+4. Use `xhigh` only after recording why the prior scoped attempt was insufficient.
 
 Do not escalate because a command failed for an environmental reason such as missing dependencies, permissions, simulator state, network access, or credentials. Fix or report the environment first.
 
@@ -54,7 +52,7 @@ Do not escalate because a command failed for an environmental reason such as mis
 
 | Work pattern | Starting recommendation |
 |---|---|
-| Documentation, localization, metadata, deterministic config edits | Luna none/low |
+| Documentation, localization, metadata, deterministic config edits | Luna low |
 | Repeated changes following an accepted example | Luna low |
 | Small UI behavior or styling change with a clear preview path | Terra low |
 | Bounded feature inside one subsystem | Terra low |
@@ -80,7 +78,7 @@ Estimate improvement against this default baseline: **all follow-on AI work uses
 Prefer measured repository-specific timing or evaluation evidence when it exists. Otherwise produce a clearly labeled heuristic range:
 
 1. Estimate the share of likely recurring work in three groups whose percentages total 100%:
-   - **Fast lane:** Luna or Terra at none/low, with deterministic or quick local verification.
+   - **Fast lane:** Luna or Terra at low, with deterministic or quick local verification.
    - **Optimized normal lane:** Terra medium or Sol low, where bounded scope reduces unnecessary reasoning.
    - **Escalation lane:** Sol high/xhigh, where extra analysis may be slower but prevents costly rework.
 2. Apply conservative improvement bands relative to the baseline:
@@ -88,6 +86,7 @@ Prefer measured repository-specific timing or evaluation evidence when it exists
    - Optimized normal lane: 10–25%.
    - Escalation lane: -10–0% direct speed improvement.
 3. Weight the lower and upper bounds by the task mix. Clamp the overall range to 0–60% and round each bound to the nearest 5 percentage points.
-4. Explain the task-mix assumptions and identify the two or three changes contributing most to the result.
+4. Subtract observed model-switch and Restore/Return time. If it is not measured, explicitly state that the estimate excludes unknown routing overhead and use the tiny-task no-switch gate; do not claim a measured gain.
+5. Explain the task-mix assumptions and identify the two or three changes contributing most to the result.
 
 Exclude unavoidable external waiting such as dependency downloads, network services, simulator or device delays, approval waits, and full builds unless the repository contains measured evidence showing that the proposed workflow changes them. Do not present generic model-tier marketing claims as benchmarks. If evidence is too weak to estimate the task mix, report `预计增效：暂无法可靠估算` and state what evidence is missing instead of inventing a percentage.
