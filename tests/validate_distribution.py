@@ -10,14 +10,14 @@ def fail(message):
     raise SystemExit(message)
 
 
-skill_text = (ROOT / "SKILL.md").read_text()
+skill_text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
 if not skill_text.startswith("---\n"):
     fail("SKILL.md frontmatter is missing")
 frontmatter = skill_text.split("---", 2)[1]
 if "\nname: codex-auto-model-router\n" not in "\n" + frontmatter or "\ndescription: " not in "\n" + frontmatter:
     fail("SKILL.md frontmatter is invalid")
 
-ui_text = (ROOT / "agents" / "openai.yaml").read_text()
+ui_text = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
 values = {}
 for line in ui_text.splitlines():
     stripped = line.strip()
@@ -65,7 +65,7 @@ if "Never make a persistent same-task switch when the original model or effort i
 if "A failed segment stops the chain" not in skill_text or "Never re-plan after execution begins" not in skill_text:
     fail("segment failure or recursion guard is missing")
 
-state_machine = (ROOT / "references" / "execution-state-machine.md").read_text()
+state_machine = (ROOT / "references" / "execution-state-machine.md").read_text(encoding="utf-8")
 for invariant in (
     "one immutable `route_id`",
     "immutable adaptive budget",
@@ -78,7 +78,7 @@ for invariant in (
     if invariant not in state_machine:
         fail(f"state-machine invariant is missing: {invariant}")
 
-ledger_text = (ROOT / "scripts" / "model_usage_ledger.py").read_text()
+ledger_text = (ROOT / "scripts" / "model_usage_ledger.py").read_text(encoding="utf-8")
 if 'MODES = ("assess", "apply", "query", "record", "retune")' not in ledger_text:
     fail("Apply ledger mode is missing")
 if "import msvcrt" not in ledger_text or "import fcntl" not in ledger_text:
@@ -86,12 +86,12 @@ if "import msvcrt" not in ledger_text or "import fcntl" not in ledger_text:
 if 'commands.add_parser("claim")' not in ledger_text or '"segment_claim"' not in ledger_text:
     fail("atomic Segment replay claim is missing")
 
-policy_text = (ROOT / "scripts" / "route_policy.py").read_text()
+policy_text = (ROOT / "scripts" / "route_policy.py").read_text(encoding="utf-8")
 for contract in ("CODEX_THREAD_ID", "thread_settings_applied", "turn_context", "route-already-matched", "selectable-subagent-or-local", "segmented-v1", "DEFAULT_MAX_SEGMENTS", "EXTENDED_MAX_SEGMENTS", "HARD_MAX_SEGMENTS", "HARD_MAX_SWITCHES", "budget_source", "plan_hash", "attempt_id", "validate_segment_cursor", "synthetic-test-input", "load_benchmark_evidence", "evidence-snapshot-expired", "prior_failure", "resolve_family_fallback", "gpt56-family-unavailable"):
     if contract not in policy_text:
         fail(f"route policy contract is missing: {contract}")
 
-install_text = (ROOT / "install.sh").read_text()
+install_text = (ROOT / "install.sh").read_text(encoding="utf-8")
 if 'cp "$ROOT/scripts/"*.py' not in install_text:
     fail("installer does not copy every bundled policy script")
 if 'cp "$ROOT/references/benchmark-evidence.json"' not in install_text:
@@ -103,9 +103,11 @@ if 'LEGACY_SKILL_TARGET="$CODEX_HOME/skills/codex-model-router"' not in install_
 if 'project-model-router*.toml' in install_text or 'project-model-executor*.toml' in install_text:
     fail("installer uses an unsafe broad legacy-agent cleanup glob")
 
-preset_mapping = (ROOT / "references" / "preset-mapping.md").read_text()
+preset_mapping = (ROOT / "references" / "preset-mapping.md").read_text(encoding="utf-8")
 
-evidence = json.loads((ROOT / "references" / "benchmark-evidence.json").read_text())
+evidence = json.loads(
+    (ROOT / "references" / "benchmark-evidence.json").read_text(encoding="utf-8")
+)
 if evidence.get("schema_version") != 1 or not evidence.get("snapshot_id"):
     fail("benchmark evidence metadata is invalid")
 if evidence.get("runtime_network_required") is not False:
@@ -116,7 +118,7 @@ if len(evidence.get("sources", [])) < 6:
     fail("benchmark evidence does not contain enough attributable sources")
 if len(evidence.get("effort_profiles", {}).get("metrics", [])) < 15:
     fail("benchmark evidence effort matrix is incomplete")
-if "GPT-5.5" not in (ROOT / "references" / "benchmark-evidence.md").read_text():
+if "GPT-5.5" not in (ROOT / "references" / "benchmark-evidence.md").read_text(encoding="utf-8"):
     fail("benchmark evidence report is missing the GPT-5.5 comparison")
 
 models = {"sol": "gpt-5.6-sol", "terra": "gpt-5.6-terra", "luna": "gpt-5.6-luna"}
@@ -132,7 +134,7 @@ for tier, model in models.items():
             name = f"codex-auto-model-router-{effort}.toml"
         else:
             name = f"codex-auto-model-router-{tier}-{effort}.toml"
-        data = tomllib.loads((ROOT / "codex-agents" / name).read_text())
+        data = tomllib.loads((ROOT / "codex-agents" / name).read_text(encoding="utf-8"))
         if data.get("name") != Path(name).stem.replace("-", "_"):
             fail(f"incorrect preset name: {name}")
         if data.get("model") != model or data.get("model_reasoning_effort") != effort:
@@ -153,7 +155,9 @@ for tier, model in models.items():
             executor_name = f"codex-auto-model-executor-{effort}.toml"
         else:
             executor_name = f"codex-auto-model-executor-{tier}-{effort}.toml"
-        executor = tomllib.loads((ROOT / "codex-agents" / executor_name).read_text())
+        executor = tomllib.loads(
+            (ROOT / "codex-agents" / executor_name).read_text(encoding="utf-8")
+        )
         if executor.get("name") != Path(executor_name).stem.replace("-", "_"):
             fail(f"incorrect executor name: {executor_name}")
         if executor.get("model") != model or executor.get("model_reasoning_effort") != effort:
@@ -175,13 +179,19 @@ legacy_presets = list((ROOT / "codex-agents").glob("project-model-*.toml"))
 if legacy_presets:
     fail(f"legacy preset files remain: {legacy_presets}")
 
-readme_text = (ROOT / "README.md").read_text()
+readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
 if "https://github.com/orange-the-weak/codex-auto-model-router" not in readme_text:
     fail("README install URL does not match the current repository remote")
 
 for forbidden in ("s" + "k-" + "live", "BEGIN " + "PRIVATE KEY", "api" + "_key"):
     for path in ROOT.rglob("*"):
-        if path.is_file() and ".git" not in path.parts and forbidden in path.read_text(errors="ignore"):
+        if (
+            path.is_file()
+            and ".git" not in path.parts
+            and "__pycache__" not in path.parts
+            and path.suffix != ".pyc"
+            and forbidden in path.read_text(encoding="utf-8", errors="ignore")
+        ):
             fail(f"possible secret marker {forbidden!r} in {path}")
 
 print("distribution OK: skill metadata, UI metadata, 12 router presets, 12 executor presets, no obvious secrets")
