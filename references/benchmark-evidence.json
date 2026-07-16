@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "gpt56-routing-evidence-2026-07-15",
+  "observed_at": "2026-07-15",
+  "expires_after_days": 90,
+  "runtime_network_required": false,
+  "policy": {
+    "task_signals_override_benchmark_priors": true,
+    "gpt55_fallback_requires_gpt56_family_unavailable": true,
+    "api_price_is_codex_subscription_cost": false,
+    "community_results_affect_hard_rules": false,
+    "xhigh_requires_escalation_evidence": true
+  },
+  "sources": [
+    {
+      "id": "openai-gpt56-launch",
+      "publisher": "OpenAI",
+      "url": "https://openai.com/index/gpt-5-6/",
+      "surface": "codex-agent",
+      "quality": "primary",
+      "routing_weight": "high"
+    },
+    {
+      "id": "aa-coding-agent-index-v1.1",
+      "publisher": "Artificial Analysis",
+      "url": "https://artificialanalysis.ai/methodology/coding-agents-benchmarking",
+      "surface": "codex-agent",
+      "quality": "independent-methodology",
+      "routing_weight": "high"
+    },
+    {
+      "id": "aa-intelligence-index-v4.1",
+      "publisher": "Artificial Analysis",
+      "url": "https://artificialanalysis.ai/methodology/intelligence-benchmarking",
+      "surface": "api",
+      "quality": "independent-methodology",
+      "routing_weight": "medium"
+    },
+    {
+      "id": "deepswe-paper",
+      "publisher": "DeepSWE authors",
+      "url": "https://arxiv.org/abs/2607.07946",
+      "surface": "benchmark-design",
+      "quality": "primary-paper",
+      "routing_weight": "supporting"
+    },
+    {
+      "id": "terminal-bench-paper",
+      "publisher": "Terminal-Bench authors",
+      "url": "https://arxiv.org/abs/2601.11868",
+      "surface": "benchmark-design",
+      "quality": "primary-paper",
+      "routing_weight": "supporting"
+    },
+    {
+      "id": "swe-bench-pro-paper",
+      "publisher": "SWE-Bench Pro authors",
+      "url": "https://arxiv.org/abs/2509.16941",
+      "surface": "benchmark-design",
+      "quality": "primary-paper",
+      "routing_weight": "supporting"
+    }
+  ],
+  "coding_agent_results": {
+    "surface": "OpenAI Codex harness / coding agents",
+    "reasoning_setting": "publisher default unless separately labeled",
+    "models": {
+      "gpt-5.6-sol": {"coding_agent_index": 80.0, "swe_bench_pro": 64.6, "deep_swe_v1_1": 72.7, "terminal_bench_2_1": 88.8},
+      "gpt-5.6-terra": {"coding_agent_index": 77.4, "swe_bench_pro": 63.4, "deep_swe_v1_1": 69.6, "terminal_bench_2_1": 87.4},
+      "gpt-5.6-luna": {"coding_agent_index": 74.6, "swe_bench_pro": 62.7, "deep_swe_v1_1": 67.2, "terminal_bench_2_1": 84.7},
+      "gpt-5.5": {"coding_agent_index": 76.4, "swe_bench_pro": 59.4, "deep_swe_v1_1": 67.0, "terminal_bench_2_1": 85.6}
+    }
+  },
+  "excluded_variants": [
+    {
+      "name": "GPT-5.6 Sol Ultra",
+      "observed_terminal_bench_2_1": 91.9,
+      "reason": "Multi-agent variant; not comparable with the router's single-task Sol/Terra/Luna lanes."
+    },
+    {
+      "name": "max/ultra effort",
+      "reason": "Outside the router's low/medium/high/xhigh main matrix and not used for automatic selection."
+    }
+  ],
+  "effort_profiles": {
+    "surface": "API Intelligence Index v4.1; relative prior only, not Codex wall time",
+    "source_url_pattern": "https://artificialanalysis.ai/models/{model-slug}-{effort}",
+    "missing_observations": [
+      {"model": "gpt-5.5", "effort": "xhigh", "reason": "No stable public observation was captured; no value is inferred."}
+    ],
+    "metrics": [
+      {"model": "gpt-5.6-sol", "effort": "low", "intelligence": 49, "output_tokens_per_second": 53.0, "ttft_seconds": 3.71, "total_index_output_tokens_millions": 6.6},
+      {"model": "gpt-5.6-sol", "effort": "medium", "intelligence": 54, "output_tokens_per_second": 54.7, "ttft_seconds": 4.65, "total_index_output_tokens_millions": 12.0},
+      {"model": "gpt-5.6-sol", "effort": "high", "intelligence": 56, "output_tokens_per_second": 55.8, "ttft_seconds": 9.17, "total_index_output_tokens_millions": 21.0},
+      {"model": "gpt-5.6-sol", "effort": "xhigh", "intelligence": 58, "output_tokens_per_second": 62.6, "ttft_seconds": 35.82, "total_index_output_tokens_millions": 35.0},
+      {"model": "gpt-5.6-terra", "effort": "low", "intelligence": 40, "output_tokens_per_second": 117.3, "ttft_seconds": 1.36, "total_index_output_tokens_millions": 5.9},
+      {"model": "gpt-5.6-terra", "effort": "medium", "intelligence": 46, "output_tokens_per_second": 107.0, "ttft_seconds": 1.63, "total_index_output_tokens_millions": 10.0},
+      {"model": "gpt-5.6-terra", "effort": "high", "intelligence": 49, "output_tokens_per_second": 113.1, "ttft_seconds": 2.16, "total_index_output_tokens_millions": 24.0},
+      {"model": "gpt-5.6-terra", "effort": "xhigh", "intelligence": 52, "output_tokens_per_second": 125.0, "ttft_seconds": 16.24, "total_index_output_tokens_millions": 36.0},
+      {"model": "gpt-5.6-luna", "effort": "low", "intelligence": 33, "output_tokens_per_second": 182.7, "ttft_seconds": 1.48, "total_index_output_tokens_millions": 7.0},
+      {"model": "gpt-5.6-luna", "effort": "medium", "intelligence": 38, "output_tokens_per_second": 177.3, "ttft_seconds": 1.94, "total_index_output_tokens_millions": 12.0},
+      {"model": "gpt-5.6-luna", "effort": "high", "intelligence": 46, "output_tokens_per_second": 180.5, "ttft_seconds": 5.10, "total_index_output_tokens_millions": 37.0},
+      {"model": "gpt-5.6-luna", "effort": "xhigh", "intelligence": 49, "output_tokens_per_second": 191.9, "ttft_seconds": 27.96, "total_index_output_tokens_millions": 67.0},
+      {"model": "gpt-5.5", "effort": "low", "intelligence": 43, "output_tokens_per_second": 60.6, "ttft_seconds": null, "total_index_output_tokens_millions": 6.8},
+      {"model": "gpt-5.5", "effort": "medium", "intelligence": 50, "output_tokens_per_second": 60.7, "ttft_seconds": null, "total_index_output_tokens_millions": 21.0},
+      {"model": "gpt-5.5", "effort": "high", "intelligence": 53, "output_tokens_per_second": 66.5, "ttft_seconds": null, "total_index_output_tokens_millions": 43.0}
+    ]
+  },
+  "routing_lanes": {
+    "mechanical_clear": {"model": "gpt-5.6-luna", "effort": "low"},
+    "mechanical_large": {"model": "gpt-5.6-luna", "effort": "medium"},
+    "ordinary_bounded": {"model": "gpt-5.6-terra", "effort": "low"},
+    "ordinary_interacting": {"model": "gpt-5.6-terra", "effort": "medium"},
+    "complex_bounded": {"model": "gpt-5.6-sol", "effort": "medium"},
+    "complex_uncertain_or_high_consequence": {"model": "gpt-5.6-sol", "effort": "high"},
+    "complex_failed_escalation": {"model": "gpt-5.6-sol", "effort": "xhigh"}
+  },
+  "efficiency_hypothesis": {
+    "baseline": "all applicable AI work uses gpt-5.6-sol/medium",
+    "illustrative_task_mix_percent": {"mechanical_clear": 25, "ordinary_bounded": 45, "complex_bounded": 25, "complex_uncertain_or_high_consequence": 5},
+    "weighted_api_ttft_proxy_reduction_percent": 44,
+    "weighted_index_output_proxy_reduction_percent": 30,
+    "estimated_codex_turnaround_improvement_percent": {"low": 15, "high": 30},
+    "status": "heuristic; tool execution and verification time are not represented by API proxies"
+  }
+}

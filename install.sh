@@ -12,6 +12,7 @@ mkdir -p "$SKILL_TARGET/agents" "$SKILL_TARGET/references" "$SKILL_TARGET/script
 cp "$ROOT/SKILL.md" "$SKILL_TARGET/SKILL.md"
 cp "$ROOT/agents/openai.yaml" "$SKILL_TARGET/agents/openai.yaml"
 cp "$ROOT/references/"*.md "$SKILL_TARGET/references/"
+cp "$ROOT/references/benchmark-evidence.json" "$SKILL_TARGET/references/benchmark-evidence.json"
 cp "$ROOT/scripts/"*.py "$SKILL_TARGET/scripts/"
 cp "$ROOT/codex-agents/"*.toml "$AGENT_TARGET/"
 

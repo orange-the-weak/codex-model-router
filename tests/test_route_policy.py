@@ -59,6 +59,88 @@ class RoutePolicyTests(unittest.TestCase):
             values["segment_budget"], values["switch_budget"], values["budget_source"],
         )
 
+    def test_fallback_keeps_sol_target_inside_gpt56_family(self):
+        result = POLICY.resolve_family_fallback(
+            "Sol", "high", ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+        )
+        self.assertEqual(result["execution"]["model"], "gpt-5.6-terra")
+        self.assertEqual(result["reason"], "gpt56-family-fallback")
+        self.assertTrue(result["gpt56_family_available"])
+
+    def test_fallback_keeps_terra_target_inside_gpt56_family(self):
+        result = POLICY.resolve_family_fallback(
+            "Terra", "medium", ["gpt-5.6-luna", "gpt-5.5"]
+        )
+        self.assertEqual(result["execution"]["model"], "gpt-5.6-luna")
+        self.assertNotEqual(result["execution"]["model"], "gpt-5.5")
+
+    def test_fallback_keeps_luna_target_inside_gpt56_family(self):
+        result = POLICY.resolve_family_fallback(
+            "Luna", "low", ["gpt-5.6-terra", "gpt-5.5"]
+        )
+        self.assertEqual(result["execution"]["model"], "gpt-5.6-terra")
+
+    def test_gpt55_is_allowed_only_when_all_gpt56_models_are_unavailable(self):
+        result = POLICY.resolve_family_fallback(
+            "Terra", "medium", ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+        )
+        self.assertEqual(result["execution"]["model"], "gpt-5.5")
+        self.assertFalse(result["gpt56_family_available"])
+        self.assertEqual(result["reason"], "gpt56-family-unavailable")
+
+    def test_unknown_availability_retries_gpt56_target_instead_of_assuming_gpt55(self):
+        result = POLICY.resolve_family_fallback("Terra", "medium")
+        self.assertEqual(result["execution"]["model"], "gpt-5.6-terra")
+        self.assertIsNone(result["gpt56_family_available"])
+        self.assertEqual(result["reason"], "availability-unknown-try-gpt56-target-first")
+
+    def test_empty_availability_never_invents_gpt55(self):
+        result = POLICY.resolve_family_fallback("Luna", "low", [])
+        self.assertIsNone(result["execution"]["model"])
+        self.assertEqual(result["reason"], "no-supported-model-available")
+
+    def test_single_route_does_not_restore_from_gpt56_to_original_gpt55(self):
+        route = POLICY.select_route(
+            "apply", current=current("gpt-5.5", "medium")
+        )
+        self.assertEqual(route["execution"]["dispatch"], "same-task-switch")
+        self.assertEqual(route["execution"]["model"], "gpt-5.6-terra")
+        self.assertFalse(route["restore_required"])
+
+    def test_segment_plan_does_not_restore_to_original_gpt55(self):
+        plan = POLICY.plan_apply_segments(
+            [self.segment("implement")], current=current("gpt-5.5", "medium")
+        )
+        self.assertEqual(plan["segments"][0]["dispatch"], "same-task-switch")
+        self.assertFalse(plan["restore_required"])
+        self.assertEqual(plan["switch_count"], 1)
+        self.assertEqual(plan["original"]["model"], "gpt-5.5")
+
+    def test_segment_plan_still_restores_original_gpt56(self):
+        plan = POLICY.plan_apply_segments(
+            [self.segment("implement")], current=current("gpt-5.6-sol", "medium")
+        )
+        self.assertTrue(plan["restore_required"])
+        self.assertEqual(plan["switch_count"], 2)
+
+    def test_envelope_rejects_restore_to_original_gpt55(self):
+        plan = POLICY.plan_apply_segments(
+            [self.segment("implement")], current=current("gpt-5.5", "medium")
+        )
+        plan["restore_required"] = True
+        plan["switch_count"] += 1
+        plan["plan_hash"] = POLICY.plan_hash(
+            plan["segments"], plan["route_id"], plan["original"], True,
+            plan["segment_budget"], plan["switch_budget"], plan["budget_source"],
+            plan["routing_evidence"],
+        )
+        for segment in plan["segments"]:
+            segment["attempt_id"] = POLICY.hashlib.sha256(
+                f"{plan['route_id']}:{plan['plan_hash']}:{segment['segment_id']}".encode()
+            ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "non-GPT-5.6 original"):
+            self.validate_cursor(plan, 0, "implement", [])
+
     def test_detects_latest_current_route_for_exact_thread(self):
         with tempfile.TemporaryDirectory() as directory:
             thread_id = "019f6001-95ae-7411-a5ba-7895a1897e49"
@@ -183,17 +265,99 @@ class RoutePolicyTests(unittest.TestCase):
         route = POLICY.select_route("apply", risk="high", current=current("gpt-5.6-terra", "medium"))
         self.assertEqual((route["recommended"]["model"], route["recommended"]["effort"]), ("gpt-5.6-sol", "high"))
 
-    def test_complex_apply_switches_from_previous_luna_to_sol_high(self):
+    def test_bounded_complex_apply_switches_from_previous_luna_to_sol_medium(self):
         route = POLICY.select_route(
             "apply", task_kind="complex", risk="normal", size="normal",
             current=current("gpt-5.6-luna", "low"),
         )
         self.assertEqual(
             (route["recommended"]["model"], route["recommended"]["effort"]),
-            ("gpt-5.6-sol", "high"),
+            ("gpt-5.6-sol", "medium"),
         )
         self.assertEqual(route["execution"]["dispatch"], "same-task-switch")
         self.assertTrue(route["restore_required"])
+
+    def test_high_ambiguity_complex_uses_sol_high(self):
+        route = POLICY.select_route(
+            "apply", task_kind="complex", ambiguity="high",
+            current=current("gpt-5.6-luna", "low"),
+        )
+        self.assertEqual(
+            (route["recommended"]["model"], route["recommended"]["effort"]),
+            ("gpt-5.6-sol", "high"),
+        )
+        self.assertEqual(
+            route["recommended"]["source"],
+            "benchmark-prior:complex_uncertain_or_high_consequence",
+        )
+
+    def test_failed_complex_attempt_is_the_only_automatic_xhigh_escalation(self):
+        route = POLICY.select_route(
+            "apply", task_kind="complex", prior_failure=True,
+            current=current("gpt-5.6-sol", "medium"),
+        )
+        self.assertEqual(
+            (route["recommended"]["model"], route["recommended"]["effort"]),
+            ("gpt-5.6-sol", "xhigh"),
+        )
+
+    def test_active_evidence_snapshot_is_exposed_for_audit(self):
+        route = POLICY.select_route("apply", current=current())
+        self.assertEqual(route["routing_evidence"]["status"], "active")
+        self.assertEqual(
+            route["routing_evidence"]["snapshot_id"],
+            "gpt56-routing-evidence-2026-07-15",
+        )
+
+    def test_stale_evidence_falls_back_without_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            data = json.loads(POLICY.DEFAULT_EVIDENCE_PATH.read_text())
+            data["observed_at"] = "2020-01-01"
+            path.write_text(json.dumps(data))
+            route = POLICY.select_route(
+                "apply", task_kind="complex", current=current(), evidence_path=path
+            )
+            self.assertEqual(route["routing_evidence"]["status"], "stale")
+            self.assertEqual(
+                (route["recommended"]["model"], route["recommended"]["effort"]),
+                ("gpt-5.6-sol", "high"),
+            )
+            self.assertEqual(route["recommended"]["source"], "deterministic-fallback")
+
+    def test_invalid_evidence_falls_back_without_crashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            path.write_text("{not-json")
+            route = POLICY.select_route("apply", current=current(), evidence_path=path)
+            self.assertEqual(route["routing_evidence"]["status"], "invalid")
+            self.assertEqual(route["recommended"]["source"], "deterministic-fallback")
+
+    def test_evidence_without_required_independent_source_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            data = json.loads(POLICY.DEFAULT_EVIDENCE_PATH.read_text())
+            data["sources"] = [
+                item for item in data["sources"]
+                if item["id"] != "aa-coding-agent-index-v1.1"
+            ]
+            path.write_text(json.dumps(data))
+            route = POLICY.select_route("apply", current=current(), evidence_path=path)
+            self.assertEqual(route["routing_evidence"]["status"], "invalid")
+            self.assertIn("required-sources-missing", route["routing_evidence"]["reason"])
+
+    def test_incomplete_gpt56_effort_matrix_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            data = json.loads(POLICY.DEFAULT_EVIDENCE_PATH.read_text())
+            data["effort_profiles"]["metrics"] = [
+                item for item in data["effort_profiles"]["metrics"]
+                if (item["model"], item["effort"]) != ("gpt-5.6-luna", "xhigh")
+            ]
+            path.write_text(json.dumps(data))
+            route = POLICY.select_route("apply", current=current(), evidence_path=path)
+            self.assertEqual(route["routing_evidence"]["status"], "invalid")
+            self.assertIn("matrix-incomplete", route["routing_evidence"]["reason"])
 
     def test_segment_plan_routes_and_restores_in_one_thread(self):
         segments = [
@@ -206,12 +370,12 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(
             [(item["model"], item["effort"]) for item in plan["segments"]],
             [
-                ("gpt-5.6-sol", "high"),
+                ("gpt-5.6-sol", "medium"),
                 ("gpt-5.6-terra", "medium"),
                 ("gpt-5.6-luna", "low"),
             ],
         )
-        self.assertEqual(plan["switch_count"], 4)
+        self.assertEqual(plan["switch_count"], 3)
         self.assertEqual((plan["segment_budget"], plan["switch_budget"]), (4, 4))
         self.assertEqual(plan["budget_source"], "standard")
         self.assertTrue(plan["restore_required"])
@@ -232,6 +396,27 @@ class RoutePolicyTests(unittest.TestCase):
         plan["segments"][0]["goal"] = "mutated"
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
             self.validate_cursor(plan, 0, "implement", [])
+
+    def test_cursor_validation_rejects_evidence_snapshot_mutation(self):
+        plan = POLICY.plan_apply_segments([self.segment("implement")], current=current())
+        plan["routing_evidence"]["snapshot_id"] = "forged"
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            self.validate_cursor(plan, 0, "implement", [])
+
+    def test_legacy_plan_without_evidence_still_validates(self):
+        plan = POLICY.plan_apply_segments([self.segment("implement")], current=current())
+        plan.pop("routing_evidence")
+        plan["plan_hash"] = POLICY.plan_hash(
+            plan["segments"], plan["route_id"], plan["original"],
+            plan["restore_required"], plan["segment_budget"],
+            plan["switch_budget"], plan["budget_source"],
+        )
+        for segment in plan["segments"]:
+            segment["attempt_id"] = POLICY.hashlib.sha256(
+                f"{plan['route_id']}:{plan['plan_hash']}:{segment['segment_id']}".encode()
+            ).hexdigest()
+        selected = self.validate_cursor(plan, 0, "implement", [])
+        self.assertEqual(selected["segment_id"], "implement")
 
     def test_cursor_validation_rejects_budget_mutation(self):
         plan = POLICY.plan_apply_segments([self.segment("implement")], current=current())
@@ -320,7 +505,7 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual(plan["segment_count"], 2)
         self.assertEqual(
             [(item["model"], item["effort"]) for item in plan["segments"]],
-            [("gpt-5.6-sol", "high"), ("gpt-5.6-luna", "low")],
+            [("gpt-5.6-sol", "medium"), ("gpt-5.6-luna", "low")],
         )
 
     def test_unknown_original_uses_non_persistent_segment_fallback(self):

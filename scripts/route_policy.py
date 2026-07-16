@@ -7,10 +7,17 @@ import json
 import os
 import re
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 
 MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+GPT55_MODEL = "gpt-5.5"
+FAMILY_FALLBACK_ORDER = {
+    "gpt-5.6-sol": ("gpt-5.6-terra", "gpt-5.6-luna"),
+    "gpt-5.6-terra": ("gpt-5.6-sol", "gpt-5.6-luna"),
+    "gpt-5.6-luna": ("gpt-5.6-terra", "gpt-5.6-sol"),
+}
 RUNTIME_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 THREAD_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 SEGMENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
@@ -21,6 +28,7 @@ EXTENDED_MAX_SEGMENTS = 6
 EXTENDED_MAX_SWITCHES = 6
 HARD_MAX_SEGMENTS = 8
 HARD_MAX_SWITCHES = 8
+DEFAULT_EVIDENCE_PATH = Path(__file__).resolve().parents[1] / "references" / "benchmark-evidence.json"
 MODEL_ALIASES = {
     "gpt-5.6": "gpt-5.6-sol",
     "gpt-5.6 sol": "gpt-5.6-sol",
@@ -44,6 +52,129 @@ EFFORT_ALIASES = {
 }
 
 
+def unavailable_evidence(status="missing", reason="evidence-file-missing"):
+    return {
+        "status": status,
+        "snapshot_id": None,
+        "observed_at": None,
+        "expires_at": None,
+        "source": None,
+        "reason": reason,
+        "lanes": {},
+    }
+
+
+def load_benchmark_evidence(path=None, today=None):
+    """Load a versioned offline snapshot; never fetch evidence during Apply."""
+    path = Path(path) if path is not None else DEFAULT_EVIDENCE_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return unavailable_evidence()
+    except (OSError, json.JSONDecodeError) as exc:
+        return unavailable_evidence("invalid", f"evidence-read-error:{type(exc).__name__}")
+
+    try:
+        if data.get("schema_version") != 1:
+            raise ValueError("unsupported-schema")
+        snapshot_id = data["snapshot_id"]
+        observed_at = date.fromisoformat(data["observed_at"])
+        expires_after_days = data["expires_after_days"]
+        lanes = data["routing_lanes"]
+        sources = data["sources"]
+        policy = data["policy"]
+        effort_metrics = data["effort_profiles"]["metrics"]
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise ValueError("invalid-snapshot-id")
+        if not isinstance(expires_after_days, int) or not 1 <= expires_after_days <= 365:
+            raise ValueError("invalid-expiry")
+        if data.get("runtime_network_required") is not False:
+            raise ValueError("runtime-network-must-be-disabled")
+        if policy.get("task_signals_override_benchmark_priors") is not True:
+            raise ValueError("task-evidence-precedence-missing")
+        if policy.get("gpt55_fallback_requires_gpt56_family_unavailable") is not True:
+            raise ValueError("gpt56-family-fallback-guard-missing")
+        source_ids = {
+            source.get("id") for source in sources if isinstance(source, dict)
+        }
+        required_sources = {
+            "openai-gpt56-launch", "aa-coding-agent-index-v1.1",
+            "aa-intelligence-index-v4.1",
+        }
+        if not required_sources.issubset(source_ids):
+            raise ValueError("required-sources-missing")
+        gpt56_efforts = {
+            (item.get("model"), item.get("effort"))
+            for item in effort_metrics if isinstance(item, dict)
+            and item.get("model") in MODELS
+        }
+        expected_efforts = {
+            (model, effort) for model in MODELS
+            for effort in ("low", "medium", "high", "xhigh")
+        }
+        if not expected_efforts.issubset(gpt56_efforts):
+            raise ValueError("gpt56-effort-matrix-incomplete")
+        required_lanes = {
+            "mechanical_clear", "mechanical_large", "ordinary_bounded",
+            "ordinary_interacting", "complex_bounded",
+            "complex_uncertain_or_high_consequence", "complex_failed_escalation",
+        }
+        if not isinstance(lanes, dict) or not required_lanes.issubset(lanes):
+            raise ValueError("missing-routing-lanes")
+        for lane in required_lanes:
+            normalize_model(lanes[lane].get("model"))
+            normalize_effort(lanes[lane].get("effort"))
+    except (KeyError, TypeError, ValueError) as exc:
+        return unavailable_evidence("invalid", f"evidence-schema-error:{exc}")
+
+    current_day = today or date.today()
+    if isinstance(current_day, str):
+        current_day = date.fromisoformat(current_day)
+    expires_at = observed_at + timedelta(days=expires_after_days)
+    status = "active" if current_day <= expires_at else "stale"
+    return {
+        "status": status,
+        "snapshot_id": snapshot_id,
+        "observed_at": observed_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "source": str(path),
+        "reason": None if status == "active" else "evidence-snapshot-expired",
+        "lanes": lanes if status == "active" else {},
+    }
+
+
+def evidence_audit(evidence):
+    return {
+        key: evidence.get(key)
+        for key in ("status", "snapshot_id", "observed_at", "expires_at", "reason")
+    }
+
+
+def _task_signals(task_kind, risk, size, ambiguity=None, coupling=None,
+                  verification=None, consequence=None, prior_failure=False):
+    ambiguity = ambiguity or ("low" if risk == "low" or size == "tiny" else "medium")
+    coupling = coupling or ("low" if size == "tiny" else ("high" if size == "large" and task_kind == "complex" else "medium"))
+    verification = verification or ("deterministic" if task_kind == "mechanical" or risk == "low" else "mixed")
+    consequence = consequence or ("high" if risk == "high" else ("low" if risk == "low" else "normal"))
+    if ambiguity not in ("low", "medium", "high"):
+        raise ValueError(f"unsupported ambiguity: {ambiguity}")
+    if coupling not in ("low", "medium", "high"):
+        raise ValueError(f"unsupported coupling: {coupling}")
+    if verification not in ("deterministic", "mixed", "judgment"):
+        raise ValueError(f"unsupported verification: {verification}")
+    if consequence not in ("low", "normal", "high"):
+        raise ValueError(f"unsupported consequence: {consequence}")
+    if not isinstance(prior_failure, bool):
+        raise ValueError("prior_failure must be a boolean")
+    return {
+        "ambiguity": ambiguity,
+        "coupling": coupling,
+        "verification": verification,
+        "consequence": consequence,
+        "prior_failure": prior_failure,
+    }
+
+
 def normalize_model(value):
     if value is None:
         return None
@@ -60,6 +191,62 @@ def normalize_effort(value):
     if normalized is None:
         raise ValueError(f"unsupported effort: {value}")
     return normalized
+
+
+def normalize_available_model(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    key = value.strip().lower()
+    if key in ("gpt-5.5", "gpt5.5"):
+        return GPT55_MODEL
+    return MODEL_ALIASES.get(key)
+
+
+def is_gpt56_model(value):
+    return value in MODELS
+
+
+def resolve_family_fallback(target_model, target_effort, available_models=None):
+    """Resolve pre-execution availability without leaving GPT-5.6 prematurely."""
+    target_model = normalize_model(target_model)
+    target_effort = normalize_effort(target_effort)
+    if available_models is None:
+        return {
+            "target": {"model": target_model, "effort": target_effort},
+            "execution": {"model": target_model, "effort": target_effort},
+            "fallback": False,
+            "gpt56_family_available": None,
+            "reason": "availability-unknown-try-gpt56-target-first",
+        }
+
+    available = {
+        normalized for model in available_models
+        if (normalized := normalize_available_model(model)) is not None
+    }
+    if target_model in available:
+        execution_model = target_model
+        reason = "target-available"
+    else:
+        execution_model = next(
+            (model for model in FAMILY_FALLBACK_ORDER[target_model] if model in available),
+            None,
+        )
+        reason = "gpt56-family-fallback" if execution_model else None
+
+    family_available = any(model in available for model in MODELS)
+    if execution_model is None and not family_available and GPT55_MODEL in available:
+        execution_model = GPT55_MODEL
+        reason = "gpt56-family-unavailable"
+    elif execution_model is None:
+        reason = "no-supported-model-available"
+
+    return {
+        "target": {"model": target_model, "effort": target_effort},
+        "execution": {"model": execution_model, "effort": target_effort},
+        "fallback": execution_model != target_model,
+        "gpt56_family_available": family_available,
+        "reason": reason,
+    }
 
 
 def unavailable_current(thread_id=None, reason="metadata-unavailable"):
@@ -149,11 +336,21 @@ def detect_current_route(sessions_root=None, environ=None):
     }
 
 
-def recommended_route(mode, task_kind, risk, size, report_model=None, report_effort=None):
+def recommended_route(
+    mode, task_kind, risk, size, report_model=None, report_effort=None,
+    ambiguity=None, coupling=None, verification=None, consequence=None,
+    prior_failure=False, evidence=None,
+):
     if mode == "apply" and (report_model is not None or report_effort is not None):
         if report_model is None or report_effort is None:
             raise ValueError("report route requires both model and effort")
         return report_model, report_effort, "report"
+
+    signals = _task_signals(
+        task_kind, risk, size, ambiguity, coupling, verification,
+        consequence, prior_failure,
+    )
+    evidence = evidence or load_benchmark_evidence()
 
     if mode in ("assess", "retune"):
         if risk == "high" or task_kind == "complex":
@@ -162,6 +359,34 @@ def recommended_route(mode, task_kind, risk, size, report_model=None, report_eff
             return "gpt-5.6-sol", "low", "adaptive-default"
         return "gpt-5.6-sol", "medium", "default"
 
+    if evidence.get("status") != "active":
+        return _legacy_recommended_route(mode, task_kind, risk, size)
+
+    lanes = evidence["lanes"]
+    if task_kind == "complex" and signals["prior_failure"]:
+        lane = "complex_failed_escalation"
+    elif (
+        signals["consequence"] == "high" or signals["ambiguity"] == "high"
+        or signals["coupling"] == "high" or signals["verification"] == "judgment"
+    ):
+        lane = "complex_uncertain_or_high_consequence"
+    elif task_kind == "complex":
+        lane = "complex_bounded"
+    elif task_kind == "mechanical":
+        lane = "mechanical_large" if size == "large" else "mechanical_clear"
+    elif (
+        signals["ambiguity"] == "low" and signals["coupling"] == "low"
+        and signals["verification"] == "deterministic"
+    ):
+        lane = "ordinary_bounded"
+    else:
+        lane = "ordinary_interacting"
+    selected = lanes[lane]
+    return normalize_model(selected["model"]), normalize_effort(selected["effort"]), f"benchmark-prior:{lane}"
+
+
+def _legacy_recommended_route(mode, task_kind, risk, size):
+    """Retained as an explicit reference for stale/invalid snapshot tests."""
     if risk == "high" or task_kind == "complex":
         return "gpt-5.6-sol", "high", "deterministic-fallback"
     if task_kind == "mechanical":
@@ -181,11 +406,19 @@ def select_route(
     report_model=None,
     report_effort=None,
     current=None,
+    ambiguity=None,
+    coupling=None,
+    verification=None,
+    consequence=None,
+    prior_failure=False,
+    evidence_path=None,
 ):
     report_model = normalize_model(report_model)
     report_effort = normalize_effort(report_effort)
+    evidence = load_benchmark_evidence(evidence_path)
     target_model, target_effort, source = recommended_route(
-        mode, task_kind, risk, size, report_model, report_effort
+        mode, task_kind, risk, size, report_model, report_effort,
+        ambiguity, coupling, verification, consequence, prior_failure, evidence,
     )
 
     explicit_override = model_override is not None or effort_override is not None
@@ -210,7 +443,9 @@ def select_route(
         dispatch = "selectable-subagent-or-local"
         reason = "original-route-unavailable"
 
-    restore_required = dispatch == "same-task-switch"
+    restore_required = dispatch == "same-task-switch" and is_gpt56_model(
+        current.get("model")
+    )
     return {
         "route_id": str(uuid.uuid4()),
         "mode": mode,
@@ -222,6 +457,7 @@ def select_route(
             "reason": reason,
         },
         "current": current,
+        "routing_evidence": evidence_audit(evidence),
         "restore_required": restore_required,
         "explicit_override": explicit_override,
     }
@@ -266,7 +502,7 @@ def _merge_adjacent_segments(segments):
 
 def plan_hash(
     segments, route_id, original, restore_required,
-    segment_budget, switch_budget, budget_source,
+    segment_budget, switch_budget, budget_source, routing_evidence=None,
 ):
     hashable = [
         {key: value for key, value in segment.items() if key != "attempt_id"}
@@ -282,6 +518,8 @@ def plan_hash(
         "budget_source": budget_source,
         "segments": hashable,
     }
+    if routing_evidence is not None:
+        payload["routing_evidence"] = routing_evidence
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -326,9 +564,11 @@ def validate_segment_cursor(
         original.get("model"), original.get("effort")
     ) != (original_model, original_effort):
         raise ValueError("envelope original route mismatch")
+    if plan.get("restore_required") and not is_gpt56_model(original.get("model")):
+        raise ValueError("Restore to a non-GPT-5.6 original is forbidden")
     if plan.get("plan_hash") != plan_hash(
         segments, plan.get("route_id"), original, plan.get("restore_required"),
-        segment_budget, switch_budget, budget_source,
+        segment_budget, switch_budget, budget_source, plan.get("routing_evidence"),
     ):
         raise ValueError("segmented plan hash mismatch")
     if not isinstance(cursor, int) or isinstance(cursor, bool) or not 0 <= cursor < len(segments):
@@ -408,6 +648,7 @@ def plan_apply_segments(
     report_effort=None,
     max_segments=None,
     max_switches=None,
+    evidence_path=None,
 ):
     """Validate and route a bounded, linear Apply segment plan."""
     if not isinstance(raw_segments, list) or not raw_segments:
@@ -426,6 +667,7 @@ def plan_apply_segments(
             "a global report route applies only to one-segment Apply; use per-segment report routes"
         )
     current = current or unavailable_current()
+    evidence = load_benchmark_evidence(evidence_path)
     current_route = None
     if current.get("status") in ("verified", "synthetic"):
         current_route = (current.get("model"), current.get("effort"))
@@ -453,6 +695,11 @@ def plan_apply_segments(
         task_kind = raw.get("task_kind", "ordinary")
         risk = raw.get("risk", "normal")
         size = raw.get("size", "normal")
+        ambiguity = raw.get("ambiguity")
+        coupling = raw.get("coupling")
+        verification = raw.get("verification")
+        consequence = raw.get("consequence")
+        prior_failure = raw.get("prior_failure", False)
         if task_kind not in ("mechanical", "ordinary", "complex"):
             raise ValueError(f"invalid task_kind for segment {segment_id}")
         if risk not in ("low", "normal", "high"):
@@ -460,8 +707,15 @@ def plan_apply_segments(
         if size not in ("tiny", "normal", "large"):
             raise ValueError(f"invalid size for segment {segment_id}")
 
+        signals = _task_signals(
+            task_kind, risk, size, ambiguity, coupling, verification,
+            consequence, prior_failure,
+        )
         target_model, target_effort, source = recommended_route(
-            "apply", task_kind, risk, size
+            "apply", task_kind, risk, size,
+            ambiguity=signals["ambiguity"], coupling=signals["coupling"],
+            verification=signals["verification"], consequence=signals["consequence"],
+            prior_failure=signals["prior_failure"], evidence=evidence,
         )
         segment_model = normalize_model(raw.get("model"))
         segment_effort = normalize_effort(raw.get("effort"))
@@ -497,6 +751,7 @@ def plan_apply_segments(
             "task_kind": task_kind,
             "risk": risk,
             "size": size,
+            **signals,
             "acceptance": _segment_list(raw.get("acceptance"), "acceptance", segment_id),
             "validation_budget": _segment_text(
                 raw.get("validation_budget"), "validation_budget", segment_id
@@ -528,6 +783,7 @@ def plan_apply_segments(
 
     restore_required = bool(
         current_route and previous_route and previous_route != current_route
+        and is_gpt56_model(current_route[0])
     )
     if restore_required:
         switches += 1
@@ -546,6 +802,7 @@ def plan_apply_segments(
         "protocol": "segmented-v1",
         "current": current,
         "original": original,
+        "routing_evidence": evidence_audit(evidence),
         "segments": segments,
         "segment_count": len(segments),
         "switch_count": switches,
@@ -567,7 +824,7 @@ def plan_apply_segments(
     }
     result["plan_hash"] = plan_hash(
         segments, route_id, original, restore_required,
-        segment_budget, switch_budget, budget_source,
+        segment_budget, switch_budget, budget_source, result["routing_evidence"],
     )
     for segment in segments:
         segment["attempt_id"] = hashlib.sha256(
@@ -579,6 +836,10 @@ def plan_apply_segments(
 def parser():
     root = argparse.ArgumentParser()
     root.add_argument("--inspect-current", action="store_true")
+    root.add_argument("--resolve-fallback", action="store_true")
+    root.add_argument("--target-model")
+    root.add_argument("--target-effort")
+    root.add_argument("--available-model", action="append")
     root.add_argument("--sessions-root", type=Path)
     root.add_argument("--no-runtime-detection", action="store_true")
     root.add_argument("--current-model")
@@ -587,6 +848,12 @@ def parser():
     root.add_argument("--task-kind", choices=("mechanical", "ordinary", "complex"), default="ordinary")
     root.add_argument("--risk", choices=("low", "normal", "high"), default="normal")
     root.add_argument("--size", choices=("tiny", "normal", "large"), default="normal")
+    root.add_argument("--ambiguity", choices=("low", "medium", "high"))
+    root.add_argument("--coupling", choices=("low", "medium", "high"))
+    root.add_argument("--verification", choices=("deterministic", "mixed", "judgment"))
+    root.add_argument("--consequence", choices=("low", "normal", "high"))
+    root.add_argument("--prior-failure", action="store_true")
+    root.add_argument("--evidence-path", type=Path, help="Offline benchmark evidence snapshot")
     root.add_argument("--model")
     root.add_argument("--effort")
     root.add_argument("--report-model")
@@ -601,6 +868,17 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if args.resolve_fallback:
+        if args.target_model is None or args.target_effort is None:
+            raise SystemExit("--resolve-fallback requires --target-model and --target-effort")
+        try:
+            result = resolve_family_fallback(
+                args.target_model, args.target_effort, args.available_model
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return
     if args.validate_envelope_json is not None:
         try:
             envelope = json.loads(args.validate_envelope_json)
@@ -660,6 +938,7 @@ def main():
                 report_effort=args.report_effort,
                 max_segments=args.max_segments,
                 max_switches=args.max_switches,
+                evidence_path=args.evidence_path,
             )
             print(json.dumps(route, ensure_ascii=False, sort_keys=True))
             return
@@ -673,6 +952,12 @@ def main():
             args.report_model,
             args.report_effort,
             current,
+            args.ambiguity,
+            args.coupling,
+            args.verification,
+            args.consequence,
+            args.prior_failure,
+            args.evidence_path,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

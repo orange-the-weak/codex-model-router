@@ -9,7 +9,7 @@ Store project-local history at `.codex/model-routing-history.jsonl`. Keep one co
 - `execution`: one confirmed Segment attempt. Fields: `event_id`, optional `task_id`, optional `route_id`, optional `segment_id`, `timestamp`, `model`, `effort`, `task_class`, `outcome`, optional non-negative `duration_seconds`, `source`, `verification` (`deterministic`, `manual`, `none`, or `unknown`), and fallback fields. Older records without Segment identifiers remain valid and are treated as whole-task attempts.
 - `allocation`: one recommended snapshot. Fields: `event_id`, `timestamp`, `basis`, and `allocation`, whose percentages total 100.
 
-Use `source=user-confirmed` when the user supplies actual usage and `source=task-metadata` only when Codex exposes reliable metadata. Never convert a recommendation into an `execution` event. Use exact model names when known; otherwise use `available-default (unverified)`.
+Use `source=user-confirmed` when the user supplies actual usage and `source=task-metadata` only when Codex exposes reliable metadata. Never convert a recommendation into an `execution` event. Use exact model names when known; otherwise use `available-default (unverified)`. An unverified default never authorizes a GPT-5.5 fallback while any GPT-5.6 route is selectable.
 
 For segmented execution, atomically `claim` before any project work, then supply both `route_id` and `segment_id` when recording the outcome. The ledger derives stable event IDs and rejects repeated natural keys for both claims and executions. If `claim` returns false, stop without tools or edits because that Segment envelope was already consumed. Legacy whole-task events without either identifier remain readable but are reported separately and do not affect Segment proportions or automatic retuning.
 
@@ -31,6 +31,7 @@ Show counts with percentages. Report success, pressure, median duration, and P75
 - Do not compare durations across substantially different task classes as if they were equivalent.
 - Preserve the old recommendation in history by appending a new allocation; never rewrite old JSONL events.
 - Record availability fallbacks so later queries can distinguish intentional routing from forced substitution.
+- For GPT-5.5, require `fallback_reason=gpt56-family-unavailable`; do not record 5.5 as a valid fallback when Sol, Terra, or Luna remained selectable.
 
 The script validates enums and durations, assigns event IDs, deduplicates supplied event IDs, locks concurrent reads/writes, skips malformed lines with warnings, and never rewrites ledger history.
 

@@ -1,13 +1,13 @@
 ---
 name: codex-auto-model-router
-description: Deterministically analyze, apply, query, record, and retune project model routing inside Codex. For Apply, create the smallest useful sequence of bounded task segments and automatically select GPT-5.6 Sol, Terra, or Luna plus low, medium, high, or xhigh reasoning for each segment; prefer native same-task overrides, continue segments in the same Codex task, restore the original route afterward when known, and fall back to an explicitly selectable subagent or the current model. Maintain a Markdown report and validated per-segment usage history. Use when the user invokes $codex-auto-model-router, asks which model should handle project work, requests dynamically routed implementation, queries usage ratios, records outcomes, or retunes assignments. Never create a new top-level Codex task.
+description: Deterministically analyze, apply, query, record, and retune project model routing inside Codex. For Apply, create the smallest useful sequence of bounded task segments and automatically select GPT-5.6 Sol, Terra, or Luna plus low, medium, high, or xhigh reasoning for each segment; prefer native same-task overrides, keep availability fallback inside the GPT-5.6 family whenever any 5.6 model is available, restore only a verified original GPT-5.6 route, and use GPT-5.5 only when the complete GPT-5.6 family is unavailable. Maintain a Markdown report and validated per-segment usage history. Use when the user invokes $codex-auto-model-router, asks which model should handle project work, requests dynamically routed implementation, queries usage ratios, records outcomes, or retunes assignments. Never create a new top-level Codex task.
 ---
 
 # Codex Auto Model Router
 
-Route simple requests as one segment. Re-evaluate every applicable Apply request from its own task evidence; never inherit either a stronger or weaker route merely because the previous request used it. Move down for simple work and up for complex work whenever the selected route differs. Split only when distinct dependent stages materially benefit from different models or reasoning levels. Run the segments in order inside the same Codex task, stop on failure, and restore the verified original route once at the end. Query and Record stay local and fast. Never add API integration, estimate API spend, create a top-level Codex task, or commit/push unless the user separately requests it.
+Route simple requests as one segment. Re-evaluate every applicable Apply request from its own task evidence; never inherit either a stronger or weaker route merely because the previous request used it. Move down for simple work and up for complex work whenever the selected route differs. Split only when distinct dependent stages materially benefit from different models or reasoning levels. Run the segments in order inside the same Codex task, stop on failure, and restore a verified original GPT-5.6 route once at the end. Query and Record stay local and fast. Never add API integration, estimate API spend, create a top-level Codex task, or commit/push unless the user separately requests it.
 
-Run `scripts/route_policy.py` before Assess, Retune, or Apply. For Apply, pass a JSON segment plan with `--segments-json`. Read [execution-state-machine.md](references/execution-state-machine.md) for segment envelopes and transitions, [preset-mapping.md](references/preset-mapping.md) before custom-agent fallback, [usage-ledger.md](references/usage-ledger.md) before writing history, and [routing-criteria.md](references/routing-criteria.md) for model selection and efficiency estimates.
+Run `scripts/route_policy.py` before Assess, Retune, or Apply. For Apply, pass a JSON segment plan with `--segments-json`. Read [execution-state-machine.md](references/execution-state-machine.md) for segment envelopes and transitions, [preset-mapping.md](references/preset-mapping.md) before custom-agent fallback, [usage-ledger.md](references/usage-ledger.md) before writing history, [routing-criteria.md](references/routing-criteria.md) for model selection, and [benchmark-evidence.md](references/benchmark-evidence.md) before changing evidence-derived lanes.
 
 ## Path dispatch
 
@@ -49,6 +49,7 @@ Each candidate segment must contain:
 - `task_kind`: `mechanical`, `ordinary`, or `complex`
 - `risk`: `low`, `normal`, or `high`
 - `size`: `tiny`, `normal`, or `large`
+- optional task evidence: `ambiguity` and `coupling` (`low|medium|high`), `verification` (`deterministic|mixed|judgment`), `consequence` (`low|normal|high`), and `prior_failure` (boolean)
 - `acceptance`: one or more concrete completion checks
 - `validation_budget`: the maximum proportionate verification work
 - optional segment-specific `model`, `effort`, and `route_source=report|user-override`; whole-request user overrides take precedence over report routes
@@ -62,7 +63,8 @@ Adaptive budgets:
 - Honor a user budget from 1 to 8. Eight segments and eight switches are absolute hard limits; never create an unbounded chain.
 - Store `segment_budget`, `switch_budget`, and `budget_source=standard|adaptive-extended|user-override` in the immutable plan and envelope.
 - Merge adjacent segments with the same model and effort.
-- Route every Segment from its own task kind, risk, size, report match, and user override. Use the current route only to choose `local` versus `same-task-switch` after selection.
+- Route every Segment from its own task kind, risk, size, ambiguity, coupling, verification, consequence, prior failure, report match, and user override. Use the current route only to choose `local` versus `same-task-switch` after selection.
+- Use the bundled, versioned `references/benchmark-evidence.json` only as an offline prior. Task evidence and user overrides outrank it. If the snapshot is missing, invalid, or expired, use the deterministic fallback; never fetch benchmarks during Apply.
 - Reject branches, cycles, non-linear dependencies, duplicate IDs, and conflicting overrides.
 - Never re-plan after execution begins. A failed segment stops the chain; do not retry it by cycling through models.
 - Do not add a review segment unless risk, ambiguity, or the user requires an independent review.
@@ -72,9 +74,12 @@ Adaptive budgets:
 Use this order once for the complete plan:
 
 1. Search available Codex task tools for `send_message_to_thread` (normally `codex_app__send_message_to_thread`). Use native same-task chaining only when the interface explicitly accepts `model` and `thinking`. Never call a thread/task creation capability. Use only the verified `current.thread_id` returned from `CODEX_THREAD_ID` metadata.
-2. If the original model and effort are verified, execute a locally matched first segment or send the first mismatched segment to the same task with its exact model and effort. Each successful segment sends at most one follow-up for the next segment. This is intentional bounded continuation, not recursive planning.
-3. If persistent same-task switching is unsafe or unavailable, execute segments sequentially through explicitly model-selectable executor presets when the subagent interface proves the selection. A task/agent name alone is not proof of model selection.
-4. Otherwise execute the plan locally with the current model. Keep low-risk fallback silent, disclose high-risk fallback once, and never claim the configured route actually ran.
+2. Read the tool's supported-model list when exposed. Before any non-target execution, run `scripts/route_policy.py --resolve-fallback --target-model <model> --target-effort <effort> --available-model <id> ...`. Unknown availability means try the selected GPT-5.6 target first; it never authorizes GPT-5.5.
+3. If the original model and effort are verified, execute a locally matched first segment or send the first mismatched segment to the same task with its exact model and effort. Each successful segment sends at most one follow-up for the next segment. This is intentional bounded continuation, not recursive planning.
+4. If the target is rejected for availability before execution, use the resolver's deterministic GPT-5.6 substitute: Sol → Terra → Luna, Terra → Sol → Luna, or Luna → Terra → Sol. These bounded capability attempts are not Segment retries.
+5. If persistent same-task switching is unsafe or unavailable, execute through explicitly model-selectable executor presets that target GPT-5.6 when the subagent interface proves the selection. A task/agent name alone is not proof of model selection.
+6. Execute locally only when the current model is GPT-5.6 or the capability check proves that Sol, Terra, and Luna are all unavailable. Never accept `available-default`, the current model, or GPT-5.5 while any GPT-5.6 route remains selectable. Do not restore to an original GPT-5.5 setting after a GPT-5.6 Segment succeeds.
+7. Use GPT-5.5 only after the capability surface explicitly exposes no GPT-5.6 model, or all three 5.6 candidates are rejected as unavailable before Segment execution. Record `fallback_from`, `fallback_to`, and `fallback_reason=gpt56-family-unavailable`; never silently downgrade.
 
 Never make a persistent same-task switch when the original model or effort is unknown. The policy returns `selectable-subagent-or-local` in that case.
 
@@ -103,6 +108,7 @@ Immediately before every Assess, Retune, Apply segment, Query, or Record, show o
 - If the selected route already matches the current task settings, show the actual model and effort with `当前路由已匹配`; never show `current-route` or `keep` placeholders.
 - Label a configured route as configured, not observed, when reliable metadata is unavailable.
 - A normal successful completion needs no separate model-identity or runtime-verification warning.
+- Always disclose a GPT-5.5 fallback once, even for low-risk work, because it proves the GPT-5.6 family was unavailable.
 - Only for a high-risk fallback, show: `Codex 自动路由状态｜目标：<model/effort>｜当前对话不支持带模型续接，已用当前可用模型继续｜<reason>`.
 
 ## Routed Apply segment
@@ -139,15 +145,16 @@ Perform only the requested read-only analysis. Save the report to `<repository>/
 
 ## Restore and Return
 
-- Preserve the original model and effort from the Coordinator envelope; never replace them with an intermediate segment route.
+- Preserve an original GPT-5.6 model and effort from the Coordinator envelope; never replace them with an intermediate segment route. Keep a non-5.6 original only for audit and do not use it as a Restore target after verified GPT-5.6 execution.
 - If the final/failed segment is already on the verified original route, return the accumulated result directly; it is already restored.
-- Otherwise, after success or failure, if a persistent switch occurred and both original values are known, make exactly one Restore continuation with the original `model` and `thinking`, `ROUTED_MODE=RETURN`, the same `route_id`, and the accumulated result.
+- Otherwise, after success or failure, if a persistent switch occurred and the verified original is GPT-5.6 with both values known, make exactly one Restore continuation with the original `model` and `thinking`, `ROUTED_MODE=RETURN`, the same `route_id`, and the accumulated result.
+- If the original model was GPT-5.5 or another non-5.6 model and a GPT-5.6 Segment ran, skip Restore and return on the verified GPT-5.6 route. This prevents completion from silently switching the task back to GPT-5.5.
 - If restoration is rejected, do not loop. Mention it only for high-risk work or when the user asks for an audit.
 - `RETURN` is terminal: perform no tools, edits, tests, assessment, delegation, ledger writes, segment advancement, or additional routing.
 
 ## Assessment and routing principles
 
-Inventory representative project evidence without builds or tests. Route each recurring task by ambiguity, scope, coupling, verification difficulty, and consequence of error. Luna fits mechanical, repetitive, locally verifiable work; Terra fits ordinary bounded engineering; Sol fits ambiguity, deep coupling, novelty, or high consequence. All three default to medium unless evidence supports low, high, or xhigh. Prefer a bounded segment over higher effort.
+Inventory representative project evidence without builds or tests. Route each recurring task by ambiguity, scope, coupling, verification difficulty, consequence of error, and whether a well-scoped attempt already failed. Luna/low fits clear mechanical work; Terra/low or medium fits bounded ordinary engineering; Sol/medium fits bounded complex work; Sol/high fits high ambiguity, coupling, judgment, or consequence. Reserve Sol/xhigh for failed complex attempts or explicit user choice. Prefer a bounded segment over higher effort.
 
 ## Report and ledger output
 

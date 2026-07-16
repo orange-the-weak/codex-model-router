@@ -1,3 +1,4 @@
+import json
 import tomllib
 from pathlib import Path
 
@@ -39,6 +40,14 @@ if "A normal successful completion needs no separate model-identity or runtime-v
     fail("normal completion suppression rule is missing")
 if "Use this order once for the complete plan" not in skill_text or "explicitly model-selectable executor presets" not in skill_text:
     fail("switch-to-subagent fallback order is missing")
+for family_guard in (
+    "Never accept `available-default`, the current model, or GPT-5.5 while any GPT-5.6 route remains selectable",
+    "Use GPT-5.5 only after the capability surface explicitly exposes no GPT-5.6 model",
+    "fallback_reason=gpt56-family-unavailable",
+    "Do not restore to an original GPT-5.5 setting after a GPT-5.6 Segment succeeds",
+):
+    if family_guard not in skill_text:
+        fail(f"GPT-5.6 family fallback guard is missing: {family_guard}")
 if "ROUTED_MODE=APPLY_SEGMENT" not in skill_text or "ROUTED_MODE=APPLY_ONESHOT" not in skill_text or "## Restore and Return" not in skill_text:
     fail("segmented Apply, compatibility, or restore contract is missing")
 for budget_contract in (
@@ -63,6 +72,8 @@ for invariant in (
     "absolute 8/8 hard limit",
     "A failed segment stops the plan",
     "`RETURN` is terminal",
+    "GPT-5.5 is legal only after the capability check proves the complete GPT-5.6 family unavailable",
+    "A non-5.6 original is audit-only after verified GPT-5.6 execution",
 ):
     if invariant not in state_machine:
         fail(f"state-machine invariant is missing: {invariant}")
@@ -76,13 +87,15 @@ if 'commands.add_parser("claim")' not in ledger_text or '"segment_claim"' not in
     fail("atomic Segment replay claim is missing")
 
 policy_text = (ROOT / "scripts" / "route_policy.py").read_text()
-for contract in ("CODEX_THREAD_ID", "thread_settings_applied", "turn_context", "route-already-matched", "selectable-subagent-or-local", "segmented-v1", "DEFAULT_MAX_SEGMENTS", "EXTENDED_MAX_SEGMENTS", "HARD_MAX_SEGMENTS", "HARD_MAX_SWITCHES", "budget_source", "plan_hash", "attempt_id", "validate_segment_cursor", "synthetic-test-input"):
+for contract in ("CODEX_THREAD_ID", "thread_settings_applied", "turn_context", "route-already-matched", "selectable-subagent-or-local", "segmented-v1", "DEFAULT_MAX_SEGMENTS", "EXTENDED_MAX_SEGMENTS", "HARD_MAX_SEGMENTS", "HARD_MAX_SWITCHES", "budget_source", "plan_hash", "attempt_id", "validate_segment_cursor", "synthetic-test-input", "load_benchmark_evidence", "evidence-snapshot-expired", "prior_failure", "resolve_family_fallback", "gpt56-family-unavailable"):
     if contract not in policy_text:
         fail(f"route policy contract is missing: {contract}")
 
 install_text = (ROOT / "install.sh").read_text()
 if 'cp "$ROOT/scripts/"*.py' not in install_text:
     fail("installer does not copy every bundled policy script")
+if 'cp "$ROOT/references/benchmark-evidence.json"' not in install_text:
+    fail("installer does not copy the benchmark evidence snapshot")
 if 'SKILL_TARGET="$CODEX_HOME/skills/codex-auto-model-router"' not in install_text:
     fail("installer target does not match the renamed skill")
 if 'LEGACY_SKILL_TARGET="$CODEX_HOME/skills/codex-model-router"' not in install_text:
@@ -91,6 +104,20 @@ if 'project-model-router*.toml' in install_text or 'project-model-executor*.toml
     fail("installer uses an unsafe broad legacy-agent cleanup glob")
 
 preset_mapping = (ROOT / "references" / "preset-mapping.md").read_text()
+
+evidence = json.loads((ROOT / "references" / "benchmark-evidence.json").read_text())
+if evidence.get("schema_version") != 1 or not evidence.get("snapshot_id"):
+    fail("benchmark evidence metadata is invalid")
+if evidence.get("runtime_network_required") is not False:
+    fail("benchmark evidence must remain offline at runtime")
+if evidence.get("policy", {}).get("gpt55_fallback_requires_gpt56_family_unavailable") is not True:
+    fail("benchmark evidence does not protect the GPT-5.6 family fallback rule")
+if len(evidence.get("sources", [])) < 6:
+    fail("benchmark evidence does not contain enough attributable sources")
+if len(evidence.get("effort_profiles", {}).get("metrics", [])) < 15:
+    fail("benchmark evidence effort matrix is incomplete")
+if "GPT-5.5" not in (ROOT / "references" / "benchmark-evidence.md").read_text():
+    fail("benchmark evidence report is missing the GPT-5.5 comparison")
 
 models = {"sol": "gpt-5.6-sol", "terra": "gpt-5.6-terra", "luna": "gpt-5.6-luna"}
 router_count = 0
